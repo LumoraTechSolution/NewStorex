@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: lumora-backend
+
+  # Neither profile is a safe default to guess wrong, but desktop is the one a developer
+  # almost always wants, and it binds to loopback only - so guessing it is harmless.
+  profiles:
+    default: desktop
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. Hibernate is only ever allowed to check it.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    # The desktop and cloud databases diverge, so each profile supplies its own
+    # locations on top of common. Missing directories are not an error - a profile
+    # legitimately has no migrations of its own yet.
+    fail-on-missing-locations: false
+
+server:
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+
+logging:
+  level:
+    org.flywaydb: INFO

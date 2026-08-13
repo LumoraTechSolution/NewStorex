@@ -1,0 +1,28 @@
+# Integration tests run against the disposable `db-test` container (docker compose),
+# never H2. This system's correctness rests on Postgres-specific behaviour — ON CONFLICT
+# upserts keyed on client_uuid, partial indexes on the outbox, timestamptz — and an
+# in-memory stand-in would pass here while a till failed.
+#
+# Testcontainers would be the tidier mechanism, but Docker Desktop 29 on Windows answers
+# docker-java's /info probe with an empty HTTP 400 on every pipe, so it cannot connect.
+# See ROADMAP §G.
+
+spring:
+  datasource:
+    url: ${TEST_DATABASE_URL:jdbc:postgresql://127.0.0.1:5444/lumora_test}
+    username: ${TEST_DATABASE_USER:lumora}
+    password: ${TEST_DB_PASSWORD:lumora}
+    hikari:
+      maximum-pool-size: 4
+      pool-name: lumora-test
+
+  flyway:
+    # Required by CleanDatabaseBeforeTests. Enabled only in this profile, and the
+    # strategy itself refuses to run against a database not named lumora_test.
+    clean-disabled: false
+
+lumora:
+  sync:
+    # Tests drive the drain by hand. A background timer firing mid-assertion would make
+    # every offline test flaky in a way that looks like a real bug.
+    enabled: false

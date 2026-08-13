@@ -1,0 +1,4 @@
+# services/backend is a Maven module and is deliberately not a pnpm workspace package.
+packages:
+  - 'apps/*'
+  - 'packages/*'

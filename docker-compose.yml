@@ -1,0 +1,93 @@
+# Development databases only.
+#
+# In production there is no Docker on the shop PC: the local Postgres is a native
+# binary bundled into the installer (M5-01). This file exists so a developer machine
+# can stand up both halves of the topology without installing two Postgres servers.
+#
+# Two containers rather than two databases in one, because they are two machines in
+# the real system — and because stopping db-cloud is a faithful way to simulate the
+# outage the M0 gate demands.
+#
+# Ports are 5442/5443, not the obvious 5432/5433: the previous POS stack still runs
+# on this machine and holds 5432 (db), 5434 (vertical db), 3000 and 8081. Nothing
+# here should require shutting that down.
+
+name: lumora-dev
+
+services:
+  # The shop PC's database. Source of truth for the sale. Owns the outbox.
+  db-local:
+    image: postgres:16.6-alpine
+    container_name: lumora-db-local
+    environment:
+      POSTGRES_DB: lumora_local
+      POSTGRES_USER: lumora
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:-lumora}
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8'
+      # Shop floor time. Timestamps are stored as timestamptz regardless, but a dev
+      # box in the wrong zone hides off-by-one-day bugs in Z-reports.
+      TZ: Asia/Colombo
+      PGTZ: Asia/Colombo
+    ports:
+      - '${LOCAL_DB_PORT:-5442}:5432'
+    volumes:
+      - db-local-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lumora -d lumora_local']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # The cloud database. Multi-tenant ingest and reporting replica.
+  # Stop this one (docker compose stop db-cloud) to rehearse an outage.
+  db-cloud:
+    image: postgres:16.6-alpine
+    container_name: lumora-db-cloud
+    environment:
+      POSTGRES_DB: lumora_cloud
+      POSTGRES_USER: lumora
+      POSTGRES_PASSWORD: ${CLOUD_DB_PASSWORD:-lumora}
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8'
+      TZ: Asia/Colombo
+      PGTZ: Asia/Colombo
+    ports:
+      - '${CLOUD_DB_PORT:-5443}:5432'
+    volumes:
+      - db-cloud-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lumora -d lumora_cloud']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Disposable. Integration tests clean and re-migrate this on every run, so it must
+  # never hold anything you care about — hence no volume, and a name the test-side
+  # safety check insists on before it will drop a schema.
+  db-test:
+    image: postgres:16.6-alpine
+    container_name: lumora-db-test
+    environment:
+      POSTGRES_DB: lumora_test
+      POSTGRES_USER: lumora
+      POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-lumora}
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8'
+      TZ: Asia/Colombo
+      PGTZ: Asia/Colombo
+    ports:
+      - '${TEST_DB_PORT:-5444}:5432'
+    volumes:
+      - ./docker/init-test-databases.sql:/docker-entrypoint-initdb.d/10-databases.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lumora -d lumora_test']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  db-local-data:
+  db-cloud-data:

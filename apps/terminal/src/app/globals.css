@@ -1,0 +1,18 @@
+@import '@lumora/ui/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--lum-page);
+  color: var(--lum-ink);
+  font-family: var(--lum-font-sans);
+  /* The terminal is a fixed appliance: no page scrolling during a sale (ROADMAP M1-07). */
+  overflow: hidden;
+}

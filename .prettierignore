@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.next/
+.turbo/
+coverage/
+target/
+pnpm-lock.yaml
+# Java module — its own conventions, and .editorconfig sets 4-space indent for xml/sql.
+services/backend/

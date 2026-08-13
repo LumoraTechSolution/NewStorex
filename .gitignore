@@ -1,0 +1,48 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+.next/
+out/
+build/
+.turbo/
+
+# java / maven
+target/
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+hs_err_pid*.log
+replay_pid*.log
+
+# electron packaging
+release/
+*.exe
+*.nsis
+
+# env & secrets
+.env
+.env.*
+!.env.example
+*.PRIVATE.*
+*.pem
+*.p12
+
+# local database / backups
+pgdata/
+*.dump
+*.sql.gz
+
+# editor / os
+.DS_Store
+Thumbs.db
+*.swp
+
+# typescript incremental state
+*.tsbuildinfo
+
+# test output
+coverage/
+playwright-report/
+test-results/

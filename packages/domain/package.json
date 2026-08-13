@@ -1,0 +1,23 @@
+{
+  "name": "@lumora/domain",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Money math, VAT extraction and cart totals. Pure TypeScript, no I/O. The single source of truth for every currency figure in the product.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "node -e \"require('node:fs').rmSync('.turbo',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "fast-check": "^3.23.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

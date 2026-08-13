@@ -1,0 +1,15 @@
+server:
+  address: 0.0.0.0
+  port: 8082
+
+spring:
+  datasource:
+    url: ${CLOUD_DATABASE_URL:jdbc:postgresql://127.0.0.1:5443/lumora_cloud}
+    username: ${CLOUD_DATABASE_USER:lumora}
+    password: ${CLOUD_DB_PASSWORD:lumora}
+    hikari:
+      maximum-pool-size: 20
+      pool-name: lumora-cloud
+
+  flyway:
+    locations: classpath:db/migration/common,classpath:db/migration/cloud

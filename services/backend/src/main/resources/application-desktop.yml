@@ -1,0 +1,36 @@
+server:
+  # Loopback only, deliberately. In v1 the till's API is not reachable from the LAN;
+  # LAN multi-terminal is a v2 feature and will be an explicit decision, not an
+  # accident of a default bind address.
+  address: 127.0.0.1
+  port: 8081
+
+spring:
+  datasource:
+    url: ${LOCAL_DATABASE_URL:jdbc:postgresql://127.0.0.1:5442/lumora_local}
+    username: ${LOCAL_DATABASE_USER:lumora}
+    password: ${LOCAL_DB_PASSWORD:lumora}
+    hikari:
+      # A single till. A large pool buys nothing and slows startup, which the
+      # cashier waits on every morning.
+      maximum-pool-size: 8
+      pool-name: lumora-local
+
+  flyway:
+    locations: classpath:db/migration/common,classpath:db/migration/desktop
+
+lumora:
+  sync:
+    enabled: true
+    cloud-url: ${LUMORA_CLOUD_URL:http://127.0.0.1:8082}
+    # ISO-8601 because @Scheduled reads these two directly and only parses that form.
+    # Ten seconds, not milliseconds: nothing in the shop waits on this, and a busy loop
+    # against an unreachable cloud helps nobody.
+    interval: PT10S
+    initial-delay: PT15S
+    batch-size: 100
+    request-timeout: 15s
+    backoff-base: 5s
+    # Capped, so a till that recovers at 3am syncs by 3:05 rather than at the far end of
+    # an unbounded exponential.
+    backoff-max: 5m
