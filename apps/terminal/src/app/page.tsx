@@ -104,7 +104,7 @@ export default function Page() {
       <SyncStatusStrip />
       <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 overflow-y-auto p-8">
         <header>
-          <h1 className="text-2xl font-semibold">Lumora Terminal</h1>
+          <h1 className="text-2xl font-semibold">StoreX Terminal</h1>
           <p className="text-ink-3 text-xs">
             M0 spike — sale commits locally, outbox carries it later.
           </p>
@@ -178,7 +178,7 @@ export default function Page() {
           type="button"
           onClick={() => void commit()}
           disabled={!selected || busy}
-          className="bg-accent min-h-touch rounded-lg text-lg font-semibold text-white disabled:opacity-40"
+          className="bg-accent text-accent-ink min-h-touch rounded-lg text-lg font-semibold disabled:opacity-40"
         >
           {busy ? 'Committing…' : 'Tender cash'}
         </button>

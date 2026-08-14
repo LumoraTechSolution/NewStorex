@@ -5,7 +5,18 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        accent: 'var(--lum-accent)',
+        // Identity, not an interactive surface — see packages/ui/src/tokens.css. Always
+        // pair with brand-ink; the logo blue fails AA against white.
+        brand: {
+          DEFAULT: 'var(--lum-brand)',
+          ink: 'var(--lum-brand-ink)',
+        },
+        // accent-ink exists so nothing has to reach for text-white on a coloured button
+        // and quietly reintroduce the contrast bug the two tokens were split to avoid.
+        accent: {
+          DEFAULT: 'var(--lum-accent)',
+          ink: 'var(--lum-accent-ink)',
+        },
         ok: 'var(--lum-ok)',
         danger: 'var(--lum-danger)',
         pending: 'var(--lum-pending)',
