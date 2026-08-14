@@ -47,7 +47,7 @@ Re-read this list at the start of every milestone. Defer anything else, but thes
 - **Touch targets ≥ 56 px** — fingers, fast, sometimes gloved. Not the 44 px web default.
 - **Tabular monospace for all currency.** The register vernacular, and the digits align.
 - **Semantic colour only:** green = complete/balanced, red = void/danger, amber = offline/pending, brand accent = the primary action and nothing else.
-- **Terminal accent is `#1A5FD0`.** The brand `hsl(217 91% 60%)` with white text is ≈3.7:1 and fails AA.
+- **Brand blue `#0FA0F3` is identity, never a white-text button** — it measures 2.9:1 on white and fails AA. Light surfaces use `--lum-accent` `#0973AF` (same hue, 5.2:1); the dark terminal uses the brand blue unmodified at 6.2:1. See **D3**.
 - **Status colour never carries meaning alone** — always icon _plus_ text label. On light surfaces amber measures 1.79:1, so the label _is_ the accessibility mechanism.
 
 ---
@@ -169,7 +169,7 @@ The terminal screen, for real, against the local backend.
 - [ ] **M1-14** Electron main-process serial/USB write + drawer kick via IPC — **no QZ Tray** (this removes the unsigned-certificate problem entirely)
 - [ ] **M1-15** `SALE` stock movement written inside the sale transaction
 - [ ] **M1-16** Playwright keyboard-only spec — completes a full sale and asserts no `click` event is dispatched
-- [ ] **M1-17** Resolve open decision **D3** (brand palette beyond the terminal's darkened accent)
+- [x] **M1-17** Resolve open decision **D3** (brand palette beyond the terminal's darkened accent) <sub>done 2026-08-13</sub>
 
 > **⛔ Gate M1** — A cashier completes **20 consecutive sales without touching a mouse**.
 >
@@ -288,13 +288,13 @@ Two things must land before the mandate bites: **IRD invoice-format compliance**
 
 Tracked here so none of them silently becomes a default.
 
-| ID     | Decision                    | Recommendation                                                                                                                                            | Resolve by | Status        |
-| ------ | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- |
-| **D1** | Variance threshold          | Per-tenant config — hardcoding LKR 100 is wrong, a jeweller and a grocer differ                                                                           | M2         | - [ ] open    |
-| **D2** | Store-credit limits offline | Moot at single till. From v2, either accept a bounded overshoot or restrict credit sales to online-only — decide deliberately rather than discovering it. | before v2  | - [ ] open    |
-| **D3** | Brand palette contrast      | Terminal uses `#1A5FD0`; the wider palette decision is still pending                                                                                      | M1         | - [ ] open    |
-| **D4** | Monorepo migration          | **Settled** — greenfield monorepo from M0-01, so the money path is never implemented twice                                                                | —          | - [x] settled |
-| **D5** | Backup strategy             | Automatic cloud backup is a v1 requirement, not v5                                                                                                        | M5         | - [ ] open    |
+| ID     | Decision                    | Recommendation                                                                                                                                                                              | Resolve by | Status        |
+| ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- |
+| **D1** | Variance threshold          | Per-tenant config — hardcoding LKR 100 is wrong, a jeweller and a grocer differ                                                                                                             | M2         | - [ ] open    |
+| **D2** | Store-credit limits offline | Moot at single till. From v2, either accept a bounded overshoot or restrict credit sales to online-only — decide deliberately rather than discovering it.                                   | before v2  | - [ ] open    |
+| **D3** | Brand palette contrast      | **Settled 2026-08-13** — StoreX logo blue `#0FA0F3` is identity only (2.9:1 on white). `--lum-accent` is that hue darkened to `#0973AF` (5.2:1); terminal keeps `#0FA0F3` at 6.2:1 on dark. | M1         | - [x] settled |
+| **D4** | Monorepo migration          | **Settled** — greenfield monorepo from M0-01, so the money path is never implemented twice                                                                                                  | —          | - [x] settled |
+| **D5** | Backup strategy             | Automatic cloud backup is a v1 requirement, not v5                                                                                                                                          | M5         | - [ ] open    |
 
 **Also settled** (from the guide's §10, recorded so they are not relitigated): modern stack re-architected offline-first with local install as the hero deployment · two apps split by backend · movements and ledgers throughout, never stored balances · outbox with `client_uuid` idempotency, push-only in v1 · per-terminal invoice number blocks from day one · ESC/POS via the Electron main process, replacing QZ Tray.
 
@@ -348,6 +348,33 @@ Append-only. One row per gate attempt (pass or fail) and per significant course 
 | 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                       |
 | 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.             |
 | 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests. |
+| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.         |
+| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                     |
+
+### D3 — the brand blue is not the accent
+
+StoreX's logo blue is `#0FA0F3` — hsl(202 90% 51%), **sampled from the artwork rather than
+eyeballed**: it is the modal colour over the mark's area at 1,701 pixels, the neighbouring values
+being JPEG ringing rather than real ink.
+
+It is a light azure, and lightness is the whole story: it carries **6.5:1 against dark ink and only
+2.9:1 against white**. The wordmark already knows this — "Store" is set in near-black, not reversed
+out. Reused naively as a button colour it fails AA on every till in the country, and the failure is
+invisible to anyone reviewing it on a good monitor.
+
+So `packages/ui/src/tokens.css` splits the two jobs. `--lum-brand` is the logo blue for marks, rules
+and identity, paired with `--lum-brand-ink`. `--lum-accent` is the same hue dragged to 36% lightness
+— `#0973AF`, 5.2:1 with white — and remains the primary action and nothing else. On
+`[data-surface='terminal']` the accent is the unmodified `#0FA0F3`, which reads 6.2:1 against the
+dark appliance: the till is the one surface where the brand colour can be itself.
+
+Semantic green/red/amber are untouched. They report state, not identity, and rebranding them would
+be the one change that makes a cash-variance screen harder to read.
+
+Assets live in `packages/ui/assets/`. The supplied JPEG is kept as the source but never shipped —
+it is brand blue on **opaque white**, so on the dark terminal it renders as a white rectangle. The
+cut-out transparent PNGs beside it are what the apps use. There is still **no vector master**,
+which caps the installer icon at 512px; worth chasing before M5-01.
 
 ### Gate M0 — executed 2026-08-12, passed
 

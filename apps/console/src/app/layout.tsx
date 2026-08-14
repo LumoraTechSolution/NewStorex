@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Lumora Console',
+  title: 'StoreX Console',
   description: 'Owner console — read-only view of your shop from anywhere',
 };
 

@@ -1,5 +1,5 @@
 /*
- * Lumora design tokens.
+ * StoreX design tokens. StoreX is the product; Lumora Tech is the company.
  *
  * Semantic colour only (ROADMAP §A):
  *   green  = complete / balanced
@@ -9,12 +9,26 @@
  *
  * Status colour never carries meaning on its own. Amber measures 1.79:1 on light
  * surfaces, so the text label is the accessibility mechanism, not a nicety.
+ *
+ * Brand vs accent is a real distinction here, not a naming flourish. The StoreX
+ * logo blue is a light azure: it carries 6.5:1 against dark ink and only 2.9:1
+ * against white. It is an identity colour that wants dark text on it — which is
+ * exactly what the wordmark does, setting "Store" in near-black — and it must
+ * never become a button with white text. Hence two tokens with different jobs.
+ *
+ * The hex is sampled from packages/ui/assets/storex-mark-source.jpg, not eyeballed.
  */
 
 :root {
-  /* Brand accent, darkened for AA. The mid-tone brand blue hsl(217 91% 60%) with
-     white text is ~3.7:1 and fails — do not use it for the terminal's primary action. */
-  --lum-accent: #1a5fd0;
+  /* The logo blue, unmodified. Marks, rules, the wordmark's X, chart series —
+     anything that is identity rather than an interactive surface. Pair with
+     --lum-brand-ink; white on this fails AA at 2.9:1. */
+  --lum-brand: #0fa0f3; /* hsl(202 90% 51%) */
+  --lum-brand-ink: #0e1419; /* 6.5:1 on --lum-brand */
+
+  /* The same hue dragged down to 36% lightness so white text clears AA at 5.2:1.
+     This is the primary action on light surfaces, and nothing else. */
+  --lum-accent: #0973af;
   --lum-accent-ink: #ffffff;
 
   --lum-ok: #0ca30c;
@@ -45,7 +59,11 @@
   --lum-ink-2: #a9b9c5;
   --lum-ink-3: #748693;
   --lum-hair: #223038;
-  --lum-accent: #5b95ee;
+  /* On the dark appliance the logo blue needs no darkening — it reads 6.2:1
+     against the terminal surface. The till is where the brand colour is itself. */
+  --lum-brand: #0fa0f3;
+  --lum-accent: #0fa0f3;
+  --lum-accent-ink: #06121c;
   --lum-ok: #3ec93e;
   --lum-danger: #ed6a6a;
   --lum-pending: #e8a33d;
