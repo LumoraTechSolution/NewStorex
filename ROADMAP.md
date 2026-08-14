@@ -1,6 +1,6 @@
 # Lumora POS — Build Roadmap
 
-> **Current position:** **M0 complete — Gate M0 passed 2026-08-12.** The offline sale and sync loop hold end to end. Next: `M1-01` (`@lumora/domain` `Money` type) and the rest of M1.
+> **Current position:** **M1 in progress.** The money layer is done — `M1-01` to `M1-05`, 53 tests, and every cart it produces is accepted by the backend's checksum. Next: `M1-06` (products / barcodes schema and local search), then the terminal layout `M1-07` onwards. Gate M0 passed 2026-08-12. **`M1-03`'s cash-rounding policy needs your sign-off** — see §G.
 
 **Source of truth for design:** [Building Lumora POS — Development Guide](https://claude.ai/code/artifact/c2c24386-6677-440a-a989-cf4d83ff8ff8). This roadmap is the _execution_ document; the guide is the _design_ document. When they conflict, the guide wins on design and this file wins on sequencing. Revise both when decisions change rather than letting the code drift.
 
@@ -153,11 +153,11 @@ Before committing to the redesign, prove the offline sale and sync loop end to e
 
 The terminal screen, for real, against the local backend.
 
-- [ ] **M1-01** `@lumora/domain` — `Money` type in integer minor units; no floats anywhere in the money path
-- [ ] **M1-02** VAT extraction — `vat = total × rate ÷ (1 + rate)`; inclusive and exclusive modes
-- [ ] **M1-03** Cart totals — line discounts, order discounts, and an explicit LKR rounding policy (decide and document cash rounding)
-- [ ] **M1-04** Property-based tests in `@lumora/domain` — totals must reconcile to the cent across **every** path
-- [ ] **M1-05** Stamp tax mode + rate per sale so historical receipts stay reproducible when the rate changes
+- [x] **M1-01** `@lumora/domain` — `Money` type in integer minor units; no floats anywhere in the money path <sub>done 2026-08-13</sub>
+- [x] **M1-02** VAT extraction — `vat = total × rate ÷ (1 + rate)`; inclusive and exclusive modes <sub>done 2026-08-13</sub>
+- [x] **M1-03** Cart totals — line discounts, order discounts, and an explicit LKR rounding policy (decide and document cash rounding) <sub>done 2026-08-13 — policy below, **needs your sign-off**</sub>
+- [x] **M1-04** Property-based tests in `@lumora/domain` — totals must reconcile to the cent across **every** path <sub>done 2026-08-13</sub>
+- [x] **M1-05** Stamp tax mode + rate per sale so historical receipts stay reproducible when the rate changes <sub>done 2026-08-13</sub>
 - [ ] **M1-06** Products / barcodes schema + local product search API
 - [ ] **M1-07** Terminal layout — fixed appliance shape, dark, no navigation, **no scrolling during a sale**, F-key bar pinned at the bottom so positions become muscle memory
 - [ ] **M1-08** The scan field is **always focused** — a barcode gun works with zero clicks
@@ -336,24 +336,25 @@ Run every item before every release, not once per milestone.
 
 Append-only. One row per gate attempt (pass or fail) and per significant course change.
 
-| Date       | Milestone | Gate result | Note                                                                                                                                                                                                                                  |
-| ---------- | --------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                                                   |
-| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                                                     |
-| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                                                            |
-| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                                                    |
-| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                                                               |
-| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                                                           |
-| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                                                       |
-| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                                                      |
-| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                                                    |
-| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                                                           |
-| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                                                 |
-| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                                                     |
-| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                                                             |
-| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                                                         |
-| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window.                                 |
-| 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't. |
+| Date       | Milestone | Gate result | Note                                                                                                                                                                                                                                                         |
+| ---------- | --------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                                                                          |
+| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                                                                            |
+| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                                                                                   |
+| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                                                                           |
+| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                                                                                      |
+| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                                                                                  |
+| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                                                                              |
+| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                                                                             |
+| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                                                                           |
+| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                                                                                  |
+| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                                                                        |
+| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                                                                            |
+| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                                                                                    |
+| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                                                                                |
+| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window.                                                        |
+| 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't.                        |
+| 2026-08-13 | M1-01→05  | —           | Money layer done. 53 domain tests, property-based. Cash rounding decided (**awaiting sign-off**). Four domain-computed carts accepted by the Java checksum, including a 1-cent discount over four lines. Properties caught a negative-zero bug on first run. |
 
 ### D3 — the brand blue is not the accent
 
@@ -381,6 +382,57 @@ all — white was the only thing to reach for. Against the brand blue that measu
 configs now expose `brand`/`brand-ink` and `accent`/`accent-ink`, and the button reads **6.61:1**.
 Nothing in the token file was wrong; the bug was that a component could not name the correct
 colour. A token nobody can reference does not exist.
+
+### M1-03 — the LKR cash rounding policy (needs sign-off)
+
+**Cash tenders round to the nearest LKR 1.00, halves away from zero. Everything else takes the
+exact amount.** Sri Lanka's circulating coinage is Rs 1, 2, 5 and 10, so a cash total of 450.50
+cannot actually be settled — the cashier already rounds it by hand, off the books and
+inconsistently. Card and wallet have no such problem and must not be rounded.
+
+**The rounding belongs to the payment, never to the sale.** This is the part that is expensive to
+undo, and it is why the policy is not simply "round the total":
+
+1. **Tax integrity.** Declared VAT derives from the sale total. Moving that total would declare VAT
+   on an amount the customer was never invoiced for, and the IRD invoice format (hard date April 2026) would report a figure that disagrees with the sale record.
+2. **The backend checksum.** `assertTotalsAreSelfConsistent` requires `subtotal − discount == total`
+   exactly. Rounding the sale total breaks it on any sale not ending in a round rupee — which is
+   most of them — and the till would start rejecting its own sales.
+
+So a 450.50 cash sale records total 450.50, cash received 451.00, rounding adjustment 0.50. The
+drawer balances, the receipt shows the adjustment, the tax figure is untouched. The residual across
+a day is a real number the M2 cash-up screen accounts for rather than hides.
+
+The increment is a constant, not per-tenant configuration. A different step later is a deliberate
+change with a migration for historical sales, not a setting someone can get wrong.
+
+### M1-01 to M1-05 — what the money layer decided
+
+**`Minor` is a branded number, not a class.** A raw `number` will not typecheck where money is
+expected, so a price arriving from JSON must pass through `minor()` — which is exactly where a float
+would otherwise slip in. Not a class, because these values serialise straight into the sale payload
+and the outbox row; a class would need marshalling on both sides, and the first time someone forgot,
+the bug would be a wrong number rather than a crash.
+
+**Carts normalise to gross before anything else.** After that single step there is no
+`INCLUSIVE`/`EXCLUSIVE` branch anywhere: tax is always extracted, discounts always apply to gross.
+Two paths through money code means the rarely-used one is the one nobody notices is wrong, and
+`EXCLUSIVE` is the trade-counter case exercised once a month. Grossing is done **per unit** so
+`qty × unitPrice = lineTotal` still holds on the receipt.
+
+**Order discounts are apportioned by largest remainder.** Rounding each share independently loses or
+invents up to a cent per line — a 10.00 discount over three lines discounts 9.99 — and that cent then
+fails the backend checksum with a customer waiting. Ties go to the earlier line so a reprinted
+receipt matches the original.
+
+**The property tests found a real bug on their first run:** `roundCashMinor` produced **negative
+zero** for small negative amounts. `-0` compares unequal to `0` under `Object.is`, so a zero rounding
+delta would have looked like a different figure from no rounding delta. `minor()` now normalises it.
+That is the case for properties over examples in one line — nobody would have typed it.
+
+**Proven against the Java checksum, not assumed.** Four carts the domain computed were posted to the
+running backend: the M0 single line, 10.00 over three lines, four lines with mixed line and order
+discounts, and a 1-cent discount spread across four lines. All `201`.
 
 ### Light and dark — how the two surfaces differ
 

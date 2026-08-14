@@ -1,13 +1,61 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { addVatMinor, extractVatMinor, formatMinor, lineTotalMinor, taxForMinor } from './money';
+import {
+  addMinor,
+  formatMinor,
+  lineTotalMinor,
+  minor,
+  multiplyMinor,
+  parseAmountToMinor,
+  subtractMinor,
+  sumMinor,
+  ZERO_MINOR,
+} from './money';
+
+describe('minor', () => {
+  it('accepts a whole number of cents', () => {
+    expect(minor(45000)).toBe(45000);
+  });
+
+  it('refuses a fractional value, which would mean a float reached the money path', () => {
+    expect(() => minor(450.5)).toThrow(RangeError);
+  });
+
+  it('refuses NaN and Infinity rather than letting them poison a total', () => {
+    expect(() => minor(Number.NaN)).toThrow(RangeError);
+    expect(() => minor(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+  });
+
+  it('refuses values past the exact-integer range', () => {
+    // Beyond 2^53 addition silently stops being exact, which is the failure this module exists to prevent.
+    expect(() => minor(Number.MAX_SAFE_INTEGER + 2)).toThrow(RangeError);
+  });
+});
+
+describe('arithmetic', () => {
+  it('multiplies only by whole counts', () => {
+    expect(multiplyMinor(minor(45000), 3)).toBe(135000);
+    expect(() => multiplyMinor(minor(45000), 1.5)).toThrow(RangeError);
+  });
+
+  it('sums an empty list to zero', () => {
+    expect(sumMinor([])).toBe(ZERO_MINOR);
+  });
+
+  it('adds and subtracts exactly where a float would not', () => {
+    // 0.1 + 0.2 !== 0.3 in binary floating point. In minor units it is just 10 + 20.
+    expect(addMinor(minor(10), minor(20))).toBe(30);
+    expect(subtractMinor(minor(30), minor(10))).toBe(20);
+  });
+});
 
 describe('lineTotalMinor', () => {
   it('multiplies in integer minor units', () => {
     expect(lineTotalMinor(45000, 2)).toBe(90000);
   });
 
-  it('refuses a fractional price, which would mean a float crept in', () => {
+  it('refuses a fractional price', () => {
     expect(() => lineTotalMinor(450.5, 1)).toThrow(RangeError);
   });
 
@@ -16,56 +64,45 @@ describe('lineTotalMinor', () => {
   });
 });
 
-describe('extractVatMinor', () => {
-  it('extracts VAT from a tax-inclusive price', () => {
-    // 900.00 inclusive of 18% contains 137.28 of VAT: 90000 * 1800 / 11800.
-    expect(extractVatMinor(90000, 1800)).toBe(13728);
-  });
-
-  it('never returns more than the amount it came out of', () => {
-    for (const total of [1, 7, 99, 45000, 1_234_567]) {
-      expect(extractVatMinor(total, 1800)).toBeLessThanOrEqual(total);
-    }
-  });
-
-  it('is zero at a zero rate', () => {
-    expect(extractVatMinor(90000, 0)).toBe(0);
-  });
-
-  it('does not multiply the rate onto the price', () => {
-    // The wrong answer — 90000 * 0.18 — is 16200. Extraction gives less, because the
-    // tax is already inside the price.
-    expect(extractVatMinor(90000, 1800)).not.toBe(16200);
-  });
-
-  it('always returns an integer', () => {
-    for (const total of [1, 2, 3, 17, 333, 99999]) {
-      expect(Number.isInteger(extractVatMinor(total, 1800))).toBe(true);
-    }
-  });
-});
-
-describe('addVatMinor', () => {
-  it('adds VAT to a tax-exclusive amount', () => {
-    expect(addVatMinor(10000, 1800)).toBe(1800);
-  });
-});
-
-describe('taxForMinor', () => {
-  it('extracts when inclusive and adds when exclusive', () => {
-    expect(taxForMinor(11800, 1800, 'INCLUSIVE')).toBe(1800);
-    expect(taxForMinor(10000, 1800, 'EXCLUSIVE')).toBe(1800);
-  });
-});
-
 describe('formatMinor', () => {
-  it('renders cents as two decimal places', () => {
-    expect(formatMinor(90000)).toBe('900.00');
-    expect(formatMinor(5)).toBe('0.05');
-    expect(formatMinor(1234567)).toBe('12,345.67');
+  it('always shows two decimal places', () => {
+    expect(formatMinor(45000)).toBe('450.00');
+    expect(formatMinor(45050)).toBe('450.50');
+    expect(formatMinor(45005)).toBe('450.05');
   });
 
-  it('handles negatives, for refunds and change', () => {
-    expect(formatMinor(-4550)).toBe('-45.50');
+  it('groups thousands and keeps the sign', () => {
+    expect(formatMinor(285000)).toBe('2,850.00');
+    expect(formatMinor(-45050)).toBe('-450.50');
+  });
+});
+
+describe('parseAmountToMinor', () => {
+  it('parses what a cashier actually types', () => {
+    expect(parseAmountToMinor('450')).toBe(45000);
+    expect(parseAmountToMinor('450.5')).toBe(45050);
+    expect(parseAmountToMinor('450.50')).toBe(45050);
+    expect(parseAmountToMinor('1,250.75')).toBe(125075);
+    expect(parseAmountToMinor('.5')).toBe(50);
+  });
+
+  it('parses the value parseFloat gets wrong', () => {
+    // parseFloat('0.29') * 100 is 28.999999999999996, so the obvious implementation
+    // loses a cent on an amount that comes up every day.
+    expect(parseAmountToMinor('0.29')).toBe(29);
+  });
+
+  it('returns null for a half-typed or unparseable amount instead of throwing', () => {
+    for (const input of ['', '   ', 'abc', '4.5.6', '450.567', '1e3']) {
+      expect(parseAmountToMinor(input)).toBeNull();
+    }
+  });
+
+  it('round-trips through formatMinor for every representable amount', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: -99_999_999, max: 99_999_999 }), (cents) => {
+        expect(parseAmountToMinor(formatMinor(cents))).toBe(cents);
+      }),
+    );
   });
 });

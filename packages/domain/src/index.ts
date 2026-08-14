@@ -12,9 +12,19 @@
  *     It is never multiplied onto them.
  *   - Balances are always the sum of entries, never a stored level.
  *
- * `money.ts` holds the narrow slice the M0 spike needed. Still to come: the full `Money`
- * type (M1-01), inclusive/exclusive modes across a whole cart (M1-02), discounts and the
- * LKR rounding policy (M1-03), and property-based tests (M1-04).
+ * | Module        | Holds                                                      | Task  |
+ * | ------------- | ---------------------------------------------------------- | ----- |
+ * | `money.ts`    | the branded `Minor` type, arithmetic, formatting, parsing  | M1-01 |
+ * | `vat.ts`      | extraction and addition, the `TaxStamp`                    | M1-02 |
+ * | `cart.ts`     | line and order discounts, apportionment, cart totals       | M1-03 |
+ * | `rounding.ts` | the LKR cash rounding policy                               | M1-03 |
+ *
+ * The invariants these uphold are stated once, in `cart.ts`, because they are the
+ * contract the backend's checksum enforces. Property-based tests in `cart.test.ts` assert
+ * them across generated carts rather than chosen examples.
  */
 
 export * from './money';
+export * from './vat';
+export * from './cart';
+export * from './rounding';

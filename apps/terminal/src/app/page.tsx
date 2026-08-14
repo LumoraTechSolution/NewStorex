@@ -1,6 +1,6 @@
 'use client';
 
-import { extractVatMinor, formatMinor, lineTotalMinor } from '@lumora/domain';
+import { cartTotals, formatMinor, taxStamp } from '@lumora/domain';
 import { useCallback, useEffect, useState } from 'react';
 
 import { SyncStatusStrip } from '@/components/SyncStatusStrip';
@@ -47,12 +47,20 @@ export default function Page() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  // All money via @lumora/domain. Nothing in this component does arithmetic on cents.
-  const total = selected ? lineTotalMinor(selected.priceMinor, qty) : 0;
-  const tax = selected ? extractVatMinor(total, selected.taxRateBp) : 0;
+  // Every figure below comes from @lumora/domain. Nothing in this component does
+  // arithmetic on cents, and nothing assembles a total by hand — the payload the backend
+  // checksums is built from the same object the screen renders, so the two cannot drift.
+  const totals = selected
+    ? cartTotals({
+        lines: [
+          { productClientUuid: selected.clientUuid, qty, unitPriceMinor: selected.priceMinor },
+        ],
+        tax: taxStamp(selected.taxMode, selected.taxRateBp),
+      })
+    : null;
 
   const commit = useCallback(async () => {
-    if (!selected) return;
+    if (!selected || !totals) return;
     setBusy(true);
     setError(null);
 
@@ -68,22 +76,23 @@ export default function Page() {
           clientUuid,
           branchCode: 'KND',
           terminalCode: 'T1',
-          taxMode: selected.taxMode,
-          taxRateBp: selected.taxRateBp,
-          subtotalMinor: total,
-          discountMinor: 0,
-          taxMinor: tax,
-          totalMinor: total,
-          lines: [
-            {
-              productClientUuid: selected.clientUuid,
-              qty,
-              unitPriceMinor: selected.priceMinor,
-              discountMinor: 0,
-              taxMinor: tax,
-              lineTotalMinor: total,
-            },
-          ],
+          // Stamped from the totals, not re-read from the product: the sale records the
+          // rate it was rung up under so the receipt still reprints correctly after a
+          // rate change (M1-05).
+          taxMode: totals.taxMode,
+          taxRateBp: totals.taxRateBp,
+          subtotalMinor: totals.subtotalMinor,
+          discountMinor: totals.discountMinor,
+          taxMinor: totals.taxMinor,
+          totalMinor: totals.totalMinor,
+          lines: totals.lines.map((line) => ({
+            productClientUuid: line.productClientUuid,
+            qty: line.qty,
+            unitPriceMinor: line.unitPriceMinor,
+            discountMinor: line.discountMinor,
+            taxMinor: line.taxMinor,
+            lineTotalMinor: line.lineTotalMinor,
+          })),
         }),
       });
 
@@ -97,7 +106,7 @@ export default function Page() {
     } finally {
       setBusy(false);
     }
-  }, [selected, qty, total, tax]);
+  }, [selected, totals]);
 
   return (
     <div className="flex h-full flex-col">
@@ -164,13 +173,15 @@ export default function Page() {
 
         <section className="border-hair flex flex-col gap-1 border-t pt-4">
           <div className="text-ink-3 flex justify-between text-sm">
-            <span>VAT included</span>
-            <span className="lum-money">{formatMinor(tax)}</span>
+            <span>{totals?.taxMode === 'EXCLUSIVE' ? 'VAT added' : 'VAT included'}</span>
+            <span className="lum-money">{formatMinor(totals?.taxMinor ?? 0)}</span>
           </div>
           <div className="flex items-baseline justify-between">
             <span className="text-lg">Total</span>
             {/* Money is the largest thing on screen. */}
-            <span className="lum-money text-4xl font-semibold">{formatMinor(total)}</span>
+            <span className="lum-money text-4xl font-semibold">
+              {formatMinor(totals?.totalMinor ?? 0)}
+            </span>
           </div>
         </section>
 
