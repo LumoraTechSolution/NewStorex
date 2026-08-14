@@ -231,12 +231,13 @@ The differentiator against legacy POS.
 - [ ] **M4-02** Per-aggregate ingest endpoints, idempotent upsert on `client_uuid`
 - [ ] **M4-03** Partial-batch failure handling — per-row accept/reject in the response
 - [ ] **M4-04** Idempotency test — replay the same outbox batch twice, assert cloud row counts unchanged
-- [ ] **M4-05** `apps/console` — Next.js PWA, phone-first single column, light/dark, **read-only**
+- [ ] **M4-05** `apps/console` — Next.js PWA, phone-first single column, light/dark, **read-only** <sub>token layer landed 2026-08-13; the rest is the console build</sub>
 - [ ] **M4-06** Today's sales, trend, branch view
 - [ ] **M4-07** Attention feed — cash variance and stock variance are the same pattern and both belong here
 - [ ] **M4-08** Super-admin — tenants, plans, licences, feature flags
 - [ ] **M4-09** Downward pull of licence / plan / feature flags on the same sync tick (**the only downward flow in v1**)
 - [ ] **M4-10** Deploy console to Vercel; host the cloud backend
+- [ ] **M4-11** Console theme **toggle** — the palette already follows the OS and already honours a `data-theme` override (done 2026-08-13); this is the user-facing control. Needs a persisted choice and a blocking inline script that stamps the attribute **before first paint**, or a viewer whose OS is light and choice is dark gets a white flash on every load. Belongs with the real console shell, not the scaffold page.
 
 > **⛔ Gate M4** — The owner sees today's takings on a phone, from another city.
 >
@@ -288,13 +289,14 @@ Two things must land before the mandate bites: **IRD invoice-format compliance**
 
 Tracked here so none of them silently becomes a default.
 
-| ID     | Decision                    | Recommendation                                                                                                                                                                              | Resolve by | Status        |
-| ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- |
-| **D1** | Variance threshold          | Per-tenant config — hardcoding LKR 100 is wrong, a jeweller and a grocer differ                                                                                                             | M2         | - [ ] open    |
-| **D2** | Store-credit limits offline | Moot at single till. From v2, either accept a bounded overshoot or restrict credit sales to online-only — decide deliberately rather than discovering it.                                   | before v2  | - [ ] open    |
-| **D3** | Brand palette contrast      | **Settled 2026-08-13** — StoreX logo blue `#0FA0F3` is identity only (2.9:1 on white). `--lum-accent` is that hue darkened to `#0973AF` (5.2:1); terminal keeps `#0FA0F3` at 6.2:1 on dark. | M1         | - [x] settled |
-| **D4** | Monorepo migration          | **Settled** — greenfield monorepo from M0-01, so the money path is never implemented twice                                                                                                  | —          | - [x] settled |
-| **D5** | Backup strategy             | Automatic cloud backup is a v1 requirement, not v5                                                                                                                                          | M5         | - [ ] open    |
+| ID     | Decision                    | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                      | Resolve by | Status        |
+| ------ | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- |
+| **D1** | Variance threshold          | Per-tenant config — hardcoding LKR 100 is wrong, a jeweller and a grocer differ                                                                                                                                                                                                                                                                                                                                                     | M2         | - [ ] open    |
+| **D2** | Store-credit limits offline | Moot at single till. From v2, either accept a bounded overshoot or restrict credit sales to online-only — decide deliberately rather than discovering it.                                                                                                                                                                                                                                                                           | before v2  | - [ ] open    |
+| **D3** | Brand palette contrast      | **Settled 2026-08-13** — StoreX logo blue `#0FA0F3` is identity only (2.9:1 on white). `--lum-accent` is that hue darkened to `#0973AF` (5.2:1); terminal keeps `#0FA0F3` at 6.2:1 on dark.                                                                                                                                                                                                                                         | M1         | - [x] settled |
+| **D4** | Monorepo migration          | **Settled** — greenfield monorepo from M0-01, so the money path is never implemented twice                                                                                                                                                                                                                                                                                                                                          | —          | - [x] settled |
+| **D6** | Light mode on the till      | **Recommend keeping the terminal dark-only.** The tokens now support a light appliance for the cost of one selector, so this is a product call, not a technical one: a fixed palette means the screen looks identical on every shift and a cashier's muscle memory for where things are never fights a changed contrast. The case _for_ is a bright shop window where a dark screen glares. Decide before M1-07 hardens the layout. | M1         | - [ ] open    |
+| **D5** | Backup strategy             | Automatic cloud backup is a v1 requirement, not v5                                                                                                                                                                                                                                                                                                                                                                                  | M5         | - [ ] open    |
 
 **Also settled** (from the guide's §10, recorded so they are not relitigated): modern stack re-architected offline-first with local install as the hero deployment · two apps split by backend · movements and ledgers throughout, never stored balances · outbox with `client_uuid` idempotency, push-only in v1 · per-terminal invoice number blocks from day one · ESC/POS via the Electron main process, replacing QZ Tray.
 
@@ -334,23 +336,24 @@ Run every item before every release, not once per milestone.
 
 Append-only. One row per gate attempt (pass or fail) and per significant course change.
 
-| Date       | Milestone | Gate result | Note                                                                                                                                                                                                  |
-| ---------- | --------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                   |
-| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                     |
-| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                            |
-| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                    |
-| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                               |
-| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                           |
-| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                       |
-| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                      |
-| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                    |
-| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                           |
-| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                 |
-| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                     |
-| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                             |
-| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                         |
-| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window. |
+| Date       | Milestone | Gate result | Note                                                                                                                                                                                                                                  |
+| ---------- | --------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                                                   |
+| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                                                     |
+| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                                                            |
+| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                                                    |
+| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                                                               |
+| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                                                           |
+| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                                                       |
+| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                                                      |
+| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                                                    |
+| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                                                           |
+| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                                                 |
+| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                                                     |
+| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                                                             |
+| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                                                         |
+| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window.                                 |
+| 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't. |
 
 ### D3 — the brand blue is not the accent
 
@@ -378,6 +381,29 @@ all — white was the only thing to reach for. Against the brand blue that measu
 configs now expose `brand`/`brand-ink` and `accent`/`accent-ink`, and the button reads **6.61:1**.
 Nothing in the token file was wrong; the bug was that a component could not name the correct
 colour. A token nobody can reference does not exist.
+
+### Light and dark — how the two surfaces differ
+
+There is **one** dark palette, entered two different ways, because the two apps have opposite
+requirements and a shared ramp is what stops them drifting apart.
+
+The **terminal** opts in permanently through `data-surface='terminal'`. A till that changed colour
+at sunset would be a support call, and a cashier's muscle memory for where things sit should never
+fight a changed contrast. It was verified to ignore every theme signal there is — OS light, OS
+dark, and an explicit `data-theme` of either — six combinations, all still `#0a0e12`.
+
+The **console** follows the viewer: it is a phone app read in daylight and in bed. Each console
+selector carries `:not([data-surface='terminal'])`, so no preference or toggle can ever drag the
+appliance out of dark.
+
+The `prefers-color-scheme` block is guarded with `:not([data-theme='light'])`. Without that guard an
+explicit light choice loses to a dark OS and the toggle only works in one direction — the failure
+looks like "the button does nothing" for exactly half the users. All four combinations were measured
+in a real window: OS light 17.26:1, OS dark 16.39:1, and both forced overrides winning against the
+opposite OS setting.
+
+`color-scheme` is set alongside the tokens so native chrome follows. Omitting it leaves a dark
+console with a white scrollbar and light date pickers, which reads as a half-finished theme.
 
 ### Driving the Electron window on this machine
 

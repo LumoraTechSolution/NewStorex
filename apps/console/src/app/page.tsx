@@ -1,7 +1,7 @@
 export default function Page() {
   return (
     <main className="mx-auto flex max-w-md flex-col gap-3 p-6">
-      <h1 className="text-2xl font-semibold">Lumora Console</h1>
+      <h1 className="text-2xl font-semibold">StoreX Console</h1>
       <p className="text-ink-2 text-sm">
         Scaffold only. Today&apos;s sales, the trend, the branch view and the attention feed are
         built in M4-05 through M4-07.

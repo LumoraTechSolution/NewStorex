@@ -20,6 +20,10 @@
  */
 
 :root {
+  /* Lets the UA theme scrollbars, date pickers and other native chrome to match.
+     Without it a dark console keeps a white scrollbar and light form controls. */
+  color-scheme: light dark;
+
   /* The logo blue, unmodified. Marks, rules, the wordmark's X, chart series —
      anything that is identity rather than an interactive surface. Pair with
      --lum-brand-ink; white on this fails AA at 2.9:1. */
@@ -50,23 +54,68 @@
   --lum-font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Roboto Mono', Menlo, monospace;
 }
 
-/* The terminal is a fixed dark appliance. It does not follow the OS theme —
-   the cashier's screen must look identical on every shift. */
-[data-surface='terminal'] {
+/*
+ * One dark palette, entered two different ways.
+ *
+ * The terminal is a fixed dark appliance and does not follow the OS theme — the
+ * cashier's screen must look identical on every shift, and a till that changed
+ * colour at sunset would be a support call. It opts in permanently via
+ * data-surface.
+ *
+ * The console is the opposite case: a phone app read in daylight and in bed, so it
+ * follows the viewer. Every console selector below carries :not([data-surface='terminal'])
+ * so the appliance can never be dragged out of dark by a preference or a toggle.
+ *
+ * On dark the logo blue needs no darkening — it reads 6.2:1 against the surface, so
+ * the accent becomes the brand colour itself and takes dark ink.
+ */
+[data-surface='terminal'],
+:root[data-theme='dark']:not([data-surface='terminal']) {
+  color-scheme: dark;
   --lum-page: #0a0e12;
   --lum-surface: #121920;
   --lum-ink: #e6edf3;
   --lum-ink-2: #a9b9c5;
   --lum-ink-3: #748693;
   --lum-hair: #223038;
-  /* On the dark appliance the logo blue needs no darkening — it reads 6.2:1
-     against the terminal surface. The till is where the brand colour is itself. */
   --lum-brand: #0fa0f3;
   --lum-accent: #0fa0f3;
   --lum-accent-ink: #06121c;
   --lum-ok: #3ec93e;
   --lum-danger: #ed6a6a;
   --lum-pending: #e8a33d;
+}
+
+/*
+ * The default state: no data-theme attribute, so the OS decides. Guarded with
+ * :not([data-theme='light']) so an explicit light choice still wins on a machine
+ * set to dark — without that guard the toggle only works in one direction.
+ *
+ * Duplicated rather than shared with the block above because a media query cannot
+ * join a selector list. Change one, change both.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']):not([data-surface='terminal']) {
+    color-scheme: dark;
+    --lum-page: #0a0e12;
+    --lum-surface: #121920;
+    --lum-ink: #e6edf3;
+    --lum-ink-2: #a9b9c5;
+    --lum-ink-3: #748693;
+    --lum-hair: #223038;
+    --lum-brand: #0fa0f3;
+    --lum-accent: #0fa0f3;
+    --lum-accent-ink: #06121c;
+    --lum-ok: #3ec93e;
+    --lum-danger: #ed6a6a;
+    --lum-pending: #e8a33d;
+  }
+}
+
+/* An explicit light choice on a dark machine: the palette is already on :root, so
+   only the native chrome needs pulling back. */
+:root[data-theme='light']:not([data-surface='terminal']) {
+  color-scheme: light;
 }
 
 .lum-money {
