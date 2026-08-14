@@ -1,6 +1,6 @@
 # Lumora POS — Build Roadmap
 
-> **Current position:** **M1 in progress.** The money layer is done — `M1-01` to `M1-05`, 53 tests, and every cart it produces is accepted by the backend's checksum. Next: `M1-06` (products / barcodes schema and local search), then the terminal layout `M1-07` onwards. Gate M0 passed 2026-08-12. **`M1-03`'s cash-rounding policy needs your sign-off** — see §G.
+> **Current position:** **M1 in progress — 6 of 17 done.** The money layer (`M1-01`–`M1-05`, 53 domain tests) and the catalogue (`M1-06`, `V103`, 53 backend tests) are in. Next: the terminal appliance itself, `M1-07` onwards. Gate M0 passed 2026-08-12. **Two things need you: `M1-03`'s cash-rounding policy needs sign-off, and `D6` (light mode on the till) is due before `M1-07` hardens the layout.**
 
 **Source of truth for design:** [Building Lumora POS — Development Guide](https://claude.ai/code/artifact/c2c24386-6677-440a-a989-cf4d83ff8ff8). This roadmap is the _execution_ document; the guide is the _design_ document. When they conflict, the guide wins on design and this file wins on sequencing. Revise both when decisions change rather than letting the code drift.
 
@@ -158,7 +158,7 @@ The terminal screen, for real, against the local backend.
 - [x] **M1-03** Cart totals — line discounts, order discounts, and an explicit LKR rounding policy (decide and document cash rounding) <sub>done 2026-08-13 — policy below, **needs your sign-off**</sub>
 - [x] **M1-04** Property-based tests in `@lumora/domain` — totals must reconcile to the cent across **every** path <sub>done 2026-08-13</sub>
 - [x] **M1-05** Stamp tax mode + rate per sale so historical receipts stay reproducible when the rate changes <sub>done 2026-08-13</sub>
-- [ ] **M1-06** Products / barcodes schema + local product search API
+- [x] **M1-06** Products / barcodes schema + local product search API <sub>done 2026-08-13</sub>
 - [ ] **M1-07** Terminal layout — fixed appliance shape, dark, no navigation, **no scrolling during a sale**, F-key bar pinned at the bottom so positions become muscle memory
 - [ ] **M1-08** The scan field is **always focused** — a barcode gun works with zero clicks
 - [ ] **M1-09** Scanner/keyboard coexistence — never bind plain digits; ignore an `Enter` arriving <60 ms after a character (that's a scanner terminator, not the cashier)
@@ -336,25 +336,26 @@ Run every item before every release, not once per milestone.
 
 Append-only. One row per gate attempt (pass or fail) and per significant course change.
 
-| Date       | Milestone | Gate result | Note                                                                                                                                                                                                                                                         |
-| ---------- | --------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                                                                          |
-| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                                                                            |
-| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                                                                                   |
-| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                                                                           |
-| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                                                                                      |
-| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                                                                                  |
-| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                                                                              |
-| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                                                                             |
-| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                                                                           |
-| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                                                                                  |
-| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                                                                        |
-| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                                                                            |
-| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                                                                                    |
-| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                                                                                |
-| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window.                                                        |
-| 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't.                        |
-| 2026-08-13 | M1-01→05  | —           | Money layer done. 53 domain tests, property-based. Cash rounding decided (**awaiting sign-off**). Four domain-computed carts accepted by the Java checksum, including a 1-cent discount over four lines. Properties caught a negative-zero bug on first run. |
+| Date       | Milestone | Gate result | Note                                                                                                                                                                                                                                                                         |
+| ---------- | --------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                                                                                          |
+| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                                                                                            |
+| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                                                                                                   |
+| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                                                                                           |
+| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                                                                                                      |
+| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                                                                                                  |
+| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                                                                                              |
+| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                                                                                             |
+| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                                                                                           |
+| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                                                                                                  |
+| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                                                                                        |
+| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                                                                                            |
+| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                                                                                                    |
+| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                                                                                                |
+| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window.                                                                        |
+| 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't.                                        |
+| 2026-08-13 | M1-01→05  | —           | Money layer done. 53 domain tests, property-based. Cash rounding decided (**awaiting sign-off**). Four domain-computed carts accepted by the Java checksum, including a 1-cent discount over four lines. Properties caught a negative-zero bug on first run.                 |
+| 2026-08-13 | M1-06     | —           | `V103` — barcodes became their own table, `products.barcode` dropped after carrying its values across. Trigram search, ranked. Backend suite 38 → 53. Verified against the live database, not just an empty one; the dev seed turned out not to be idempotent and was fixed. |
 
 ### D3 — the brand blue is not the accent
 
@@ -382,6 +383,39 @@ all — white was the only thing to reach for. Against the brand blue that measu
 configs now expose `brand`/`brand-ink` and `accent`/`accent-ink`, and the button reads **6.61:1**.
 Nothing in the token file was wrong; the bug was that a component could not name the correct
 colour. A token nobody can reference does not exist.
+
+### M1-06 — barcodes became a table
+
+`V103` moves barcodes out of `products.barcode` into `product_barcodes`, carries the existing values
+across, and drops the column.
+
+One product genuinely has several codes: the manufacturer's EAN, a different EAN after a packaging
+change, a supplier's own code on the same goods, a shop-printed label on loose items. A single
+column forces a choice, and the code that loses simply does not scan — which a cashier experiences
+as "the system is broken". Keeping both column and table would leave two records of one fact, and
+they would disagree within a month.
+
+**A barcode resolves to exactly one product**, enforced by a unique index rather than by application
+code. That is not tidiness: M1-08 requires a scan to add an item with zero clicks, and an ambiguous
+code means stopping to ask the cashier which product was meant. Refusing the duplicate when someone
+types it in is the only point where the question can be answered properly.
+
+**Two lookup paths, deliberately not one.** A scan is most of the work a till does, so it gets its
+own query — one probe of a unique index, no trigram, no ranking. Search is the fallback for loose
+goods and missing labels. `/api/products/search` returns `exactMatch`, so the terminal knows to add
+the item silently rather than inferring it from a result count — a name search that happened to
+return one row would otherwise behave like a scan.
+
+Ranking is barcode → exact SKU → name prefix → contains. Sorting by trigram similarity instead reads
+as arbitrary at the counter: "milk" should put _Milk Powder 400g_ above _Fresh Milk 1L_ because it
+starts with the word, not because of shared three-letter runs. Trigram indexes still back the
+contains-search, since a cashier types "owder" and a b-tree cannot serve a leading wildcard.
+
+**The seed was not as idempotent as it claimed.** Its header says "run it as often as you like", but
+against an already-migrated database the barcode insert collided on `(tenant_id, barcode)` — the
+carried-over rows hold those codes under uuids derived from the product, so `ON CONFLICT
+(client_uuid)` did not match and the statement aborted. Two products silently ended up with no
+barcode. Now a bare `ON CONFLICT DO NOTHING`, verified by running it twice.
 
 ### M1-03 — the LKR cash rounding policy (needs sign-off)
 

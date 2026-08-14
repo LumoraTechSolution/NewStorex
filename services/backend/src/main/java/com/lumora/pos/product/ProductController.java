@@ -1,55 +1,52 @@
 package com.lumora.pos.product;
 
 import java.util.List;
-import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
+import java.util.Optional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The catalogue the terminal sells from.
+ * The catalogue the terminal sells from (M1-06).
  *
- * <p>Minimal on purpose — enough for the M0 spike to ring up a real product rather than a
- * hardcoded UUID that goes stale the moment the database is reseeded. Barcode lookup and
- * keyboard search arrive with M1-06.
+ * <p>Loopback only, like everything on the desktop profile. There is no authentication here
+ * yet — M3-08 introduces PINs — and the till's API is not reachable from the LAN by design.
  */
 @RestController
 @RequestMapping("/api/products")
 public class ProductController {
 
-    private final JdbcTemplate jdbc;
+    private final ProductLookup lookup;
 
-    public ProductController(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    public ProductController(ProductLookup lookup) {
+        this.lookup = lookup;
     }
 
     @GetMapping
     public List<ProductSummary> active() {
-        return jdbc.query(
-                """
-                SELECT client_uuid, sku, barcode, name, price_minor, tax_mode, tax_rate_bp
-                FROM products
-                WHERE active
-                ORDER BY name
-                """,
-                (rs, row) ->
-                        new ProductSummary(
-                                rs.getObject("client_uuid", UUID.class),
-                                rs.getString("sku"),
-                                rs.getString("barcode"),
-                                rs.getString("name"),
-                                rs.getLong("price_minor"),
-                                rs.getString("tax_mode"),
-                                rs.getInt("tax_rate_bp")));
+        return lookup.active();
     }
 
-    public record ProductSummary(
-            UUID clientUuid,
-            String sku,
-            String barcode,
-            String name,
-            long priceMinor,
-            String taxMode,
-            int taxRateBp) {}
+    /**
+     * One endpoint for both the gun and the keyboard.
+     *
+     * <p>{@code exactMatch} is the part that matters to the caller: true means the query was
+     * a barcode and resolved to exactly one product, so the terminal adds it and moves on
+     * without showing anything. False means these are candidates and the cashier chooses.
+     * Without that flag the UI would have to guess from the result count, and a search that
+     * happened to return one row would silently behave like a scan.
+     */
+    @GetMapping("/search")
+    public ProductSearchResult search(
+            @RequestParam("q") String query, @RequestParam(value = "limit", required = false) Integer limit) {
+
+        Optional<ProductSummary> scanned = lookup.byBarcode(query == null ? null : query.trim());
+        if (scanned.isPresent()) {
+            return new ProductSearchResult(true, List.of(scanned.get()));
+        }
+        return new ProductSearchResult(false, lookup.search(query, limit));
+    }
+
+    public record ProductSearchResult(boolean exactMatch, List<ProductSummary> products) {}
 }
