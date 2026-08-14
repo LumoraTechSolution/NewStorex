@@ -1,6 +1,6 @@
 # Lumora POS — Build Roadmap
 
-> **Current position:** **M1 in progress — 6 of 17 done.** The money layer (`M1-01`–`M1-05`, 53 domain tests) and the catalogue (`M1-06`, `V103`, 53 backend tests) are in. Next: the terminal appliance itself, `M1-07` onwards. Gate M0 passed 2026-08-12. **Two things need you: `M1-03`'s cash-rounding policy needs sign-off, and `D6` (light mode on the till) is due before `M1-07` hardens the layout.**
+> **Current position:** **M1 in progress — 6 of 17 done.** The money layer (`M1-01`–`M1-05`, 53 domain tests) and the catalogue (`M1-06`, `V103`, 53 backend tests) are in. Next: the terminal appliance itself, `M1-07` onwards. Gate M0 passed 2026-08-12. `D6` settled — the till has light mode. **Still open: `M1-03`'s cash-rounding policy needs sign-off.**
 
 **Source of truth for design:** [Building Lumora POS — Development Guide](https://claude.ai/code/artifact/c2c24386-6677-440a-a989-cf4d83ff8ff8). This roadmap is the _execution_ document; the guide is the _design_ document. When they conflict, the guide wins on design and this file wins on sequencing. Revise both when decisions change rather than letting the code drift.
 
@@ -48,7 +48,8 @@ Re-read this list at the start of every milestone. Defer anything else, but thes
 - **Tabular monospace for all currency.** The register vernacular, and the digits align.
 - **Semantic colour only:** green = complete/balanced, red = void/danger, amber = offline/pending, brand accent = the primary action and nothing else.
 - **Brand blue `#0FA0F3` is identity, never a white-text button** — it measures 2.9:1 on white and fails AA. Light surfaces use `--lum-accent` `#0973AF` (same hue, 5.2:1); the dark terminal uses the brand blue unmodified at 6.2:1. See **D3**.
-- **Status colour never carries meaning alone** — always icon _plus_ text label. On light surfaces amber measures 1.79:1, so the label _is_ the accessibility mechanism.
+- **Status colour never carries meaning alone** — always icon _plus_ text label. The label is a mechanism, not an excuse: semantic tokens are dark enough to be text on their own page in both themes, verified in the running window (see **D6**).
+- **The till is dark by default and light by explicit choice** — never by OS preference. See **D6**.
 
 ---
 
@@ -289,14 +290,14 @@ Two things must land before the mandate bites: **IRD invoice-format compliance**
 
 Tracked here so none of them silently becomes a default.
 
-| ID     | Decision                    | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                      | Resolve by | Status        |
-| ------ | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- |
-| **D1** | Variance threshold          | Per-tenant config — hardcoding LKR 100 is wrong, a jeweller and a grocer differ                                                                                                                                                                                                                                                                                                                                                     | M2         | - [ ] open    |
-| **D2** | Store-credit limits offline | Moot at single till. From v2, either accept a bounded overshoot or restrict credit sales to online-only — decide deliberately rather than discovering it.                                                                                                                                                                                                                                                                           | before v2  | - [ ] open    |
-| **D3** | Brand palette contrast      | **Settled 2026-08-13** — StoreX logo blue `#0FA0F3` is identity only (2.9:1 on white). `--lum-accent` is that hue darkened to `#0973AF` (5.2:1); terminal keeps `#0FA0F3` at 6.2:1 on dark.                                                                                                                                                                                                                                         | M1         | - [x] settled |
-| **D4** | Monorepo migration          | **Settled** — greenfield monorepo from M0-01, so the money path is never implemented twice                                                                                                                                                                                                                                                                                                                                          | —          | - [x] settled |
-| **D6** | Light mode on the till      | **Recommend keeping the terminal dark-only.** The tokens now support a light appliance for the cost of one selector, so this is a product call, not a technical one: a fixed palette means the screen looks identical on every shift and a cashier's muscle memory for where things are never fights a changed contrast. The case _for_ is a bright shop window where a dark screen glares. Decide before M1-07 hardens the layout. | M1         | - [ ] open    |
-| **D5** | Backup strategy             | Automatic cloud backup is a v1 requirement, not v5                                                                                                                                                                                                                                                                                                                                                                                  | M5         | - [ ] open    |
+| ID     | Decision                    | Recommendation                                                                                                                                                                                                                               | Resolve by | Status        |
+| ------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- |
+| **D1** | Variance threshold          | Per-tenant config — hardcoding LKR 100 is wrong, a jeweller and a grocer differ                                                                                                                                                              | M2         | - [ ] open    |
+| **D2** | Store-credit limits offline | Moot at single till. From v2, either accept a bounded overshoot or restrict credit sales to online-only — decide deliberately rather than discovering it.                                                                                    | before v2  | - [ ] open    |
+| **D3** | Brand palette contrast      | **Settled 2026-08-13** — StoreX logo blue `#0FA0F3` is identity only (2.9:1 on white). `--lum-accent` is that hue darkened to `#0973AF` (5.2:1); terminal keeps `#0FA0F3` at 6.2:1 on dark.                                                  | M1         | - [x] settled |
+| **D4** | Monorepo migration          | **Settled** — greenfield monorepo from M0-01, so the money path is never implemented twice                                                                                                                                                   | —          | - [x] settled |
+| **D6** | Light mode on the till      | **Settled 2026-08-13 — the till gets light mode.** An explicit, persisted, per-machine choice that defaults to dark; deliberately _not_ an OS preference. Adding it exposed four AA failures in the light palette, all now fixed. See below. | M1         | - [x] settled |
+| **D5** | Backup strategy             | Automatic cloud backup is a v1 requirement, not v5                                                                                                                                                                                           | M5         | - [ ] open    |
 
 **Also settled** (from the guide's §10, recorded so they are not relitigated): modern stack re-architected offline-first with local install as the hero deployment · two apps split by backend · movements and ledgers throughout, never stored balances · outbox with `client_uuid` idempotency, push-only in v1 · per-terminal invoice number blocks from day one · ESC/POS via the Electron main process, replacing QZ Tray.
 
@@ -356,6 +357,7 @@ Append-only. One row per gate attempt (pass or fail) and per significant course 
 | 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't.                                        |
 | 2026-08-13 | M1-01→05  | —           | Money layer done. 53 domain tests, property-based. Cash rounding decided (**awaiting sign-off**). Four domain-computed carts accepted by the Java checksum, including a 1-cent discount over four lines. Properties caught a negative-zero bug on first run.                 |
 | 2026-08-13 | M1-06     | —           | `V103` — barcodes became their own table, `products.barcode` dropped after carrying its values across. Trigram search, ranked. Backend suite 38 → 53. Verified against the live database, not just an empty one; the dev seed turned out not to be idempotent and was fixed. |
+| 2026-08-13 | **D6**    | —           | **Settled: the till gets light mode**, explicit and persisted, defaulting to dark. Exposed four AA failures in the light palette — amber carrying the offline warning was at 3.38:1 — all fixed and re-measured in the running window.                                       |
 
 ### D3 — the brand blue is not the accent
 
@@ -383,6 +385,38 @@ all — white was the only thing to reach for. Against the brand blue that measu
 configs now expose `brand`/`brand-ink` and `accent`/`accent-ink`, and the button reads **6.61:1**.
 Nothing in the token file was wrong; the bug was that a component could not name the correct
 colour. A token nobody can reference does not exist.
+
+### D6 — light mode on the till, and what it exposed
+
+The till now has light mode. It is an **explicit, persisted, per-machine choice defaulting to dark**,
+not a `prefers-color-scheme` query: a shop PC's system theme is whatever the person who installed
+Windows left it on, and a till that changed colour after an update would be a support call. One
+screen, one place, one set of lights — every cashier on every shift sees the same thing, which is
+the property the fixed palette was protecting in the first place.
+
+The choice is applied by an inline script **before first paint**. Setting it in an effect after
+hydration means a shop that chose light sees a black flash on every launch and reload, which on an
+appliance reads as broken.
+
+Two things deliberately do not change with the theme: 56px touch targets and tabular monospace
+money. Those are ergonomics, not decoration, and a cashier's hands should not have to relearn the
+screen because the owner changed the colours.
+
+**Adding it exposed four AA failures that the dark-only till had been hiding.** The light palette's
+semantic colours had only ever been used as dots and borders; the status strip renders its whole
+message in them, and as _text_ on a light page they measured:
+
+| Token           | Was      | Now                  | Used for                         |
+| --------------- | -------- | -------------------- | -------------------------------- |
+| `--lum-pending` | 3.38:1 ✗ | **4.96:1** `#8F5D00` | "OFFLINE — sales saving locally" |
+| `--lum-ok`      | 2.96:1 ✗ | **4.69:1** `#0A7D0A` | sale committed                   |
+| `--lum-danger`  | 4.24:1 ✗ | **5.11:1** `#BF2D2D` | errors, voids                    |
+| `--lum-ink-3`   | 3.22:1 ✗ | **4.84:1** `#5D6B76` | section labels, hints            |
+
+Amber is the one that mattered. It carries the offline warning — the single message on a till that
+must never be easy to miss — and at 12px on a light page it was failing by a wide margin. "Muted" is
+not a WCAG exemption either, which is why `--lum-ink-3` moved too. Every text token now clears AA in
+both till themes, measured in the running window rather than calculated.
 
 ### M1-06 — barcodes became a table
 

@@ -35,15 +35,26 @@
   --lum-accent: #0973af;
   --lum-accent-ink: #ffffff;
 
-  --lum-ok: #0ca30c;
-  --lum-danger: #d03b3b;
-  --lum-pending: #b47500;
+  /*
+   * Semantic colour, dark enough to be *text* on --lum-page and not merely a dot.
+   *
+   * The status strip renders its whole message in these, so they have to clear AA at
+   * 12px, not the 3:1 a non-text indicator would need. The mid-tone versions that read
+   * fine on a dark surface measure 2.9:1 (green), 4.2:1 (red) and 3.4:1 (amber) against
+   * a light page — and amber carries "OFFLINE — sales saving locally", which is the one
+   * message on a till that must never be easy to miss.
+   */
+  --lum-ok: #0a7d0a; /* 4.7:1 on --lum-page */
+  --lum-danger: #bf2d2d; /* 5.1:1 */
+  --lum-pending: #8f5d00; /* 5.0:1 */
 
   --lum-page: #f5f7f9;
   --lum-surface: #ffffff;
   --lum-ink: #0e1419;
   --lum-ink-2: #3f4e5a;
-  --lum-ink-3: #788894;
+  /* Muted, but still text: the section labels and hints use it, and "muted" is not a
+     WCAG exemption. The old #788894 measured 3.2:1 on the light page. */
+  --lum-ink-3: #5d6b76; /* 4.8:1 on --lum-page */
   --lum-hair: #e1e8ed;
 
   /* Fingers, fast, sometimes gloved — not the 44px web default. */
@@ -55,21 +66,22 @@
 }
 
 /*
- * One dark palette, entered two different ways.
+ * One dark palette, entered three different ways (D6).
  *
- * The terminal is a fixed dark appliance and does not follow the OS theme — the
- * cashier's screen must look identical on every shift, and a till that changed
- * colour at sunset would be a support call. It opts in permanently via
- * data-surface.
+ * The **terminal** defaults to dark and stays there until the shopkeeper says
+ * otherwise. What it must never do is follow the OS: a shop PC's theme is set by
+ * whoever installed Windows, and a till that changed colour at sunset — or after a
+ * system update — would be a support call. So it is an explicit, persisted choice,
+ * not a preference query. `[data-surface='terminal']:not([data-theme='light'])` is
+ * that rule: dark unless told.
  *
- * The console is the opposite case: a phone app read in daylight and in bed, so it
- * follows the viewer. Every console selector below carries :not([data-surface='terminal'])
- * so the appliance can never be dragged out of dark by a preference or a toggle.
+ * The **console** is the opposite case: a phone app read in daylight and in bed, so
+ * it follows the viewer unless overridden.
  *
  * On dark the logo blue needs no darkening — it reads 6.2:1 against the surface, so
  * the accent becomes the brand colour itself and takes dark ink.
  */
-[data-surface='terminal'],
+[data-surface='terminal']:not([data-theme='light']),
 :root[data-theme='dark']:not([data-surface='terminal']) {
   color-scheme: dark;
   --lum-page: #0a0e12;
@@ -112,10 +124,32 @@
   }
 }
 
-/* An explicit light choice on a dark machine: the palette is already on :root, so
-   only the native chrome needs pulling back. */
-:root[data-theme='light']:not([data-surface='terminal']) {
+/* An explicit light choice: the palette is already on :root, so only the native
+   chrome needs pulling back. Covers the console on a dark machine and the till in
+   daylight alike — the till reaches here because the dark rule above excludes it
+   once data-theme is 'light'. */
+:root[data-theme='light'] {
   color-scheme: light;
+}
+
+/*
+ * The till in light mode (D6).
+ *
+ * A shop with a bright window is the case that justifies this: a dark screen behind
+ * glass is a mirror. The palette is the standard light one — the accent goes back to
+ * the darkened #0973AF with white text, because the logo blue only clears AA against
+ * white when it is the *background* of dark text, not a button beside it.
+ *
+ * Two things deliberately do not change with the theme. Touch targets stay 56px, and
+ * money stays tabular monospace: those are ergonomics, not decoration, and a cashier's
+ * hands should not have to relearn the screen because the owner changed the colours.
+ */
+[data-surface='terminal'][data-theme='light'] {
+  /* Slightly warmer and less blue-white than the console's page: a till is stared at
+     for eight hours, and #f5f7f9 under a fluorescent tube is tiring. */
+  --lum-page: #eef1f4;
+  --lum-surface: #ffffff;
+  --lum-hair: #d5dee5;
 }
 
 .lum-money {

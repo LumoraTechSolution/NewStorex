@@ -4,6 +4,7 @@ import { cartTotals, formatMinor, taxStamp } from '@lumora/domain';
 import { useCallback, useEffect, useState } from 'react';
 
 import { SyncStatusStrip } from '@/components/SyncStatusStrip';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 type Product = {
   clientUuid: string;
@@ -112,11 +113,15 @@ export default function Page() {
     <div className="flex h-full flex-col">
       <SyncStatusStrip />
       <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 overflow-y-auto p-8">
-        <header>
-          <h1 className="text-2xl font-semibold">StoreX Terminal</h1>
-          <p className="text-ink-3 text-xs">
-            M0 spike — sale commits locally, outbox carries it later.
-          </p>
+        <header className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold">StoreX Terminal</h1>
+            <p className="text-ink-3 text-xs">
+              M0 spike — sale commits locally, outbox carries it later.
+            </p>
+          </div>
+          {/* Lands in the back office once M1-07 gives the till a real settings surface. */}
+          <ThemeToggle />
         </header>
 
         {error && (
