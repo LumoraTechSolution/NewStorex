@@ -1,73 +1,107 @@
 'use client';
 
-import { cartTotals, formatMinor, taxStamp } from '@lumora/domain';
+import { formatMinor } from '@lumora/domain';
 import { useCallback, useEffect, useState } from 'react';
 
+import { CartLines } from '@/components/CartLines';
+import { FunctionBar, type FunctionKey } from '@/components/FunctionBar';
+import { ScanField } from '@/components/ScanField';
 import { SyncStatusStrip } from '@/components/SyncStatusStrip';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { TotalsPanel } from '@/components/TotalsPanel';
+import { useGlobalKeys } from '@/lib/scanner';
+import { useCart, type Product } from '@/lib/useCart';
 
-type Product = {
-  clientUuid: string;
-  sku: string;
-  barcode: string | null;
-  name: string;
-  priceMinor: number;
-  taxMode: 'INCLUSIVE' | 'EXCLUSIVE';
-  taxRateBp: number;
-};
-
-type Committed = {
-  invoiceNumber: string;
-  totalMinor: number;
-  alreadyExisted: boolean;
-};
+type Committed = { invoiceNumber: string; totalMinor: number; alreadyExisted: boolean };
 
 /**
- * The M0 spike's sale screen: pick a product, choose a quantity, commit.
+ * The terminal (M1-07 to M1-10).
  *
- * This is not the terminal. M1-07 builds the real fixed appliance layout with the F-key
- * bar, the always-focused scan field and the tender overlay. What this proves is the one
- * thing M0 exists to prove — that a sale commits to the local database and lands in the
- * outbox, with nothing on the network in the way.
+ * A fixed appliance, not a web page. The shell never scrolls and has no navigation: the
+ * status strip, the scan field, the totals and the F-key bar hold their positions for the
+ * whole of a shift, and only the cart list moves inside its own region. Everything a
+ * cashier does here is reachable from the keyboard — Gate M1 is twenty consecutive sales
+ * without touching a mouse.
+ *
+ * The tender overlay with split payment and change is M1-11; F12 currently commits the
+ * sale as exact cash, which is what the M0 spike did.
  */
 export default function Page() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [selected, setSelected] = useState<Product | null>(null);
-  const [qty, setQty] = useState(1);
-  const [committed, setCommitted] = useState<Committed | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { cart, addProduct, changeQty, voidLine, clear, move } = useCart();
+  const [message, setMessage] = useState<{ tone: 'ok' | 'danger'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [picker, setPicker] = useState<Product[] | null>(null);
 
-  useEffect(() => {
-    fetch('/api/products')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`products: HTTP ${r.status}`))))
-      .then((list: Product[]) => {
-        setProducts(list);
-        setSelected(list[0] ?? null);
-      })
-      .catch((e: Error) => setError(e.message));
+  // ------------------------------------------------------------------ catalogue lookup
+
+  const lookup = useCallback(async (query: string) => {
+    const response = await fetch(`/api/products/search?q=${encodeURIComponent(query)}`, {
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`search: HTTP ${response.status}`);
+    return (await response.json()) as { exactMatch: boolean; products: Product[] };
   }, []);
 
-  // Every figure below comes from @lumora/domain. Nothing in this component does
-  // arithmetic on cents, and nothing assembles a total by hand — the payload the backend
-  // checksums is built from the same object the screen renders, so the two cannot drift.
-  const totals = selected
-    ? cartTotals({
-        lines: [
-          { productClientUuid: selected.clientUuid, qty, unitPriceMinor: selected.priceMinor },
-        ],
-        tax: taxStamp(selected.taxMode, selected.taxRateBp),
-      })
-    : null;
+  const onScan = useCallback(
+    async (code: string) => {
+      try {
+        const result = await lookup(code);
+        // exactMatch is the backend saying "this was a barcode". Trusting a result count
+        // instead would make a one-hit name search behave like a scan.
+        if (result.exactMatch && result.products[0]) {
+          addProduct(result.products[0]);
+          setMessage(null);
+          return;
+        }
+        setMessage({ tone: 'danger', text: `No product for barcode ${code}` });
+      } catch (e) {
+        setMessage({ tone: 'danger', text: e instanceof Error ? e.message : String(e) });
+      }
+    },
+    [addProduct, lookup],
+  );
 
-  const commit = useCallback(async () => {
-    if (!selected || !totals) return;
+  const onQuery = useCallback(
+    async (text: string) => {
+      try {
+        const result = await lookup(text);
+        if (result.exactMatch && result.products[0]) {
+          addProduct(result.products[0]);
+          setMessage(null);
+          return;
+        }
+        if (result.products.length === 0) {
+          setMessage({ tone: 'danger', text: `Nothing matches "${text}"` });
+          return;
+        }
+        if (result.products.length === 1) {
+          addProduct(result.products[0]!);
+          setMessage(null);
+          return;
+        }
+        setPicker(result.products);
+      } catch (e) {
+        setMessage({ tone: 'danger', text: e instanceof Error ? e.message : String(e) });
+      }
+    },
+    [addProduct, lookup],
+  );
+
+  // ------------------------------------------------------------------------- tendering
+
+  const tender = useCallback(async () => {
+    if (cart.lines.length === 0 || busy) return;
+    if (cart.blocked) {
+      setMessage({ tone: 'danger', text: cart.blocked });
+      return;
+    }
     setBusy(true);
-    setError(null);
+    setMessage(null);
 
-    // Generated here, before the request goes out. That is what makes a retry safe: the
-    // same uuid twice is the same sale, not two of them.
+    // Generated before the request goes out: the same uuid twice is the same sale, which
+    // is what makes the terminal's retry safe.
     const clientUuid = crypto.randomUUID();
+    const totals = cart.totals;
 
     try {
       const response = await fetch('/api/sales', {
@@ -77,9 +111,6 @@ export default function Page() {
           clientUuid,
           branchCode: 'KND',
           terminalCode: 'T1',
-          // Stamped from the totals, not re-read from the product: the sale records the
-          // rate it was rung up under so the receipt still reprints correctly after a
-          // rate change (M1-05).
           taxMode: totals.taxMode,
           taxRateBp: totals.taxRateBp,
           subtotalMinor: totals.subtotalMinor,
@@ -98,115 +129,151 @@ export default function Page() {
       });
 
       const body = await response.json();
-      if (!response.ok) {
-        throw new Error(body.detail ?? `HTTP ${response.status}`);
-      }
-      setCommitted(body as Committed);
+      if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
+
+      const committed = body as Committed;
+      setMessage({
+        tone: 'ok',
+        text: `${committed.invoiceNumber} — ${formatMinor(committed.totalMinor)}${
+          committed.alreadyExisted ? ' (already existed)' : ''
+        }`,
+      });
+      clear();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setMessage({ tone: 'danger', text: e instanceof Error ? e.message : String(e) });
     } finally {
       setBusy(false);
     }
-  }, [selected, totals]);
+  }, [busy, cart, clear]);
+
+  // -------------------------------------------------------------------- keyboard (M1-10)
+
+  const noPicker = useCallback(() => picker === null, [picker]);
+
+  useGlobalKeys([
+    { key: 'ArrowUp', run: () => move(-1), when: noPicker },
+    { key: 'ArrowDown', run: () => move(1), when: noPicker },
+    { key: '+', run: () => changeQty(cart.selected, 1), when: noPicker },
+    { key: '-', run: () => changeQty(cart.selected, -1), when: noPicker },
+    { key: 'F2', run: () => changeQty(cart.selected, 1), when: noPicker },
+    { key: 'F4', run: () => voidLine(cart.selected), when: noPicker },
+    { key: 'F8', run: clear, when: noPicker },
+    { key: 'F12', run: () => void tender(), when: noPicker },
+    { key: 'Escape', run: () => setPicker(null) },
+  ]);
+
+  // The picker is the one place selection leaves the cart, so it owns the arrows while open.
+  useEffect(() => {
+    if (!picker) return;
+    function onKey(event: KeyboardEvent) {
+      const index = Number(event.key) - 1;
+      if (Number.isInteger(index) && index >= 0 && index < picker!.length) {
+        event.preventDefault();
+        addProduct(picker![index]!);
+        setPicker(null);
+      }
+    }
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [picker, addProduct]);
+
+  const functionKeys: FunctionKey[] = [
+    { key: 'F1', label: 'Help' },
+    {
+      key: 'F2',
+      label: 'Qty +',
+      run: () => changeQty(cart.selected, 1),
+      disabled: cart.selected < 0,
+    },
+    { key: 'F3', label: 'Search' },
+    {
+      key: 'F4',
+      label: 'Void line',
+      run: () => voidLine(cart.selected),
+      disabled: cart.selected < 0,
+    },
+    { key: 'F5', label: 'Discount' },
+    { key: 'F6', label: 'Customer' },
+    { key: 'F7', label: 'Hold' },
+    { key: 'F8', label: 'Clear', run: clear, disabled: cart.lines.length === 0 },
+    { key: 'F9', label: 'Return' },
+    { key: 'F10', label: 'Cash up' },
+    { key: 'F11', label: 'Reprint' },
+    {
+      key: 'F12',
+      label: busy ? 'Working…' : 'Tender',
+      run: () => void tender(),
+      disabled: cart.lines.length === 0 || busy,
+    },
+  ];
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col overflow-hidden">
       <SyncStatusStrip />
-      <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 overflow-y-auto p-8">
-        <header className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold">StoreX Terminal</h1>
-            <p className="text-ink-3 text-xs">
-              M0 spike — sale commits locally, outbox carries it later.
-            </p>
-          </div>
-          {/* Lands in the back office once M1-07 gives the till a real settings surface. */}
-          <ThemeToggle />
-        </header>
 
-        {error && (
-          <p role="alert" className="border-danger text-danger border-l-2 py-2 pl-3 text-sm">
-            {error}
-          </p>
-        )}
+      <header className="border-hair flex shrink-0 items-center gap-4 border-b px-4 py-3">
+        <div className="flex-1">
+          <ScanField
+            onScan={(c) => void onScan(c)}
+            onQuery={(t) => void onQuery(t)}
+            disabled={picker !== null}
+          />
+        </div>
+        <ThemeToggle />
+      </header>
 
-        <section className="flex flex-col gap-2">
-          <h2 className="text-ink-3 text-xs uppercase tracking-wider">Item</h2>
-          <div className="flex flex-col gap-2">
-            {products.map((product) => (
-              <button
-                key={product.clientUuid}
-                type="button"
-                onClick={() => setSelected(product)}
-                aria-pressed={selected?.clientUuid === product.clientUuid}
-                className={`border-hair min-h-touch flex items-center justify-between rounded-lg border px-4 text-left ${
-                  selected?.clientUuid === product.clientUuid ? 'border-accent' : ''
-                }`}
-              >
-                <span>{product.name}</span>
-                <span className="lum-money">{formatMinor(product.priceMinor)}</span>
-              </button>
-            ))}
-            {products.length === 0 && !error && (
-              <p className="text-ink-3 text-sm">
-                No products. Run <code>pnpm db:seed</code>.
-              </p>
-            )}
-          </div>
-        </section>
-
-        <section className="flex items-center gap-3">
-          <h2 className="text-ink-3 text-xs uppercase tracking-wider">Qty</h2>
-          <button
-            type="button"
-            onClick={() => setQty((q) => Math.max(1, q - 1))}
-            className="border-hair min-h-touch w-touch rounded-lg border text-xl"
-            aria-label="Decrease quantity"
-          >
-            −
-          </button>
-          <output className="lum-money w-12 text-center text-xl">{qty}</output>
-          <button
-            type="button"
-            onClick={() => setQty((q) => q + 1)}
-            className="border-hair min-h-touch w-touch rounded-lg border text-xl"
-            aria-label="Increase quantity"
-          >
-            +
-          </button>
-        </section>
-
-        <section className="border-hair flex flex-col gap-1 border-t pt-4">
-          <div className="text-ink-3 flex justify-between text-sm">
-            <span>{totals?.taxMode === 'EXCLUSIVE' ? 'VAT added' : 'VAT included'}</span>
-            <span className="lum-money">{formatMinor(totals?.taxMinor ?? 0)}</span>
-          </div>
-          <div className="flex items-baseline justify-between">
-            <span className="text-lg">Total</span>
-            {/* Money is the largest thing on screen. */}
-            <span className="lum-money text-4xl font-semibold">
-              {formatMinor(totals?.totalMinor ?? 0)}
-            </span>
-          </div>
-        </section>
-
-        <button
-          type="button"
-          onClick={() => void commit()}
-          disabled={!selected || busy}
-          className="bg-accent text-accent-ink min-h-touch rounded-lg text-lg font-semibold disabled:opacity-40"
+      {message && (
+        <p
+          role="status"
+          aria-live="polite"
+          className={`shrink-0 border-l-2 px-4 py-2 text-sm ${
+            message.tone === 'ok' ? 'border-ok text-ok' : 'border-danger text-danger'
+          }`}
         >
-          {busy ? 'Committing…' : 'Tender cash'}
-        </button>
+          {message.text}
+        </p>
+      )}
 
-        {committed && (
-          <p className="border-ok text-ok border-l-2 py-2 pl-3 text-sm">
-            Sale committed — invoice <strong>{committed.invoiceNumber}</strong> for{' '}
-            <span className="lum-money">{formatMinor(committed.totalMinor)}</span>
-            {committed.alreadyExisted && ' (already existed)'}
-          </p>
-        )}
-      </main>
+      {/* The only scrolling region on the screen. */}
+      <div className="flex min-h-0 flex-1">
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          <CartLines cart={cart} />
+        </main>
+        <TotalsPanel cart={cart} />
+      </div>
+
+      <FunctionBar keys={functionKeys} />
+
+      {picker && (
+        <div className="bg-page/90 absolute inset-0 flex items-center justify-center p-8">
+          <div className="border-hair bg-surface w-full max-w-xl rounded-lg border p-4">
+            <h2 className="text-ink-3 mb-3 text-xs uppercase tracking-wider">
+              Choose an item — press its number, or Esc
+            </h2>
+            <ul className="flex flex-col gap-1">
+              {picker.slice(0, 9).map((product, index) => (
+                <li key={product.clientUuid}>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => {
+                      addProduct(product);
+                      setPicker(null);
+                    }}
+                    className="border-hair min-h-touch flex w-full items-center justify-between rounded border px-4 text-left"
+                  >
+                    <span>
+                      <span className="text-accent mr-3 font-semibold">{index + 1}</span>
+                      {product.name}
+                    </span>
+                    <span className="lum-money">{formatMinor(product.priceMinor)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

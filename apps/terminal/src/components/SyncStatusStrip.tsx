@@ -18,8 +18,9 @@ type SyncStatus = {
  * reassurance — and a count that stops falling is how they find out something is wrong
  * before their accountant does.
  *
- * Status colour never carries meaning on its own (ROADMAP §A): on a light surface amber
- * measures 1.79:1, so the text label is the accessibility mechanism, not decoration.
+ * Status colour never carries meaning on its own (ROADMAP §A) — every state below pairs a
+ * mark with a word. The colours themselves clear AA as text in both till themes since D6;
+ * the label is a second mechanism, not a licence for an unreadable one.
  */
 export function SyncStatusStrip({ pollMs = 5000 }: { pollMs?: number }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);

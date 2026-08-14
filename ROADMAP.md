@@ -1,6 +1,6 @@
 # Lumora POS — Build Roadmap
 
-> **Current position:** **M1 in progress — 6 of 17 done.** The money layer (`M1-01`–`M1-05`, 53 domain tests) and the catalogue (`M1-06`, `V103`, 53 backend tests) are in. Next: the terminal appliance itself, `M1-07` onwards. Gate M0 passed 2026-08-12. `D6` settled — the till has light mode. **Still open: `M1-03`'s cash-rounding policy needs sign-off.**
+> **Current position:** **M1 in progress — 11 of 18 done.** The money layer (`M1-01`–`M1-05`, 53 domain tests), the catalogue (`M1-06`, `V103`, 53 backend tests) and the keyboard-only appliance (`M1-07`–`M1-10`) are in. Gate M0 passed 2026-08-12. `D3` and `D6` settled; cash rounding signed off. **Next: `M1-11` (tender overlay), then `M1-12`–`M1-14` (invoice blocks, ESC/POS, drawer).**
 
 **Source of truth for design:** [Building Lumora POS — Development Guide](https://claude.ai/code/artifact/c2c24386-6677-440a-a989-cf4d83ff8ff8). This roadmap is the _execution_ document; the guide is the _design_ document. When they conflict, the guide wins on design and this file wins on sequencing. Revise both when decisions change rather than letting the code drift.
 
@@ -156,14 +156,14 @@ The terminal screen, for real, against the local backend.
 
 - [x] **M1-01** `@lumora/domain` — `Money` type in integer minor units; no floats anywhere in the money path <sub>done 2026-08-13</sub>
 - [x] **M1-02** VAT extraction — `vat = total × rate ÷ (1 + rate)`; inclusive and exclusive modes <sub>done 2026-08-13</sub>
-- [x] **M1-03** Cart totals — line discounts, order discounts, and an explicit LKR rounding policy (decide and document cash rounding) <sub>done 2026-08-13 — policy below, **needs your sign-off**</sub>
+- [x] **M1-03** Cart totals — line discounts, order discounts, and an explicit LKR rounding policy (decide and document cash rounding) <sub>done 2026-08-13 — policy signed off</sub>
 - [x] **M1-04** Property-based tests in `@lumora/domain` — totals must reconcile to the cent across **every** path <sub>done 2026-08-13</sub>
 - [x] **M1-05** Stamp tax mode + rate per sale so historical receipts stay reproducible when the rate changes <sub>done 2026-08-13</sub>
 - [x] **M1-06** Products / barcodes schema + local product search API <sub>done 2026-08-13</sub>
-- [ ] **M1-07** Terminal layout — fixed appliance shape, dark, no navigation, **no scrolling during a sale**, F-key bar pinned at the bottom so positions become muscle memory
-- [ ] **M1-08** The scan field is **always focused** — a barcode gun works with zero clicks
-- [ ] **M1-09** Scanner/keyboard coexistence — never bind plain digits; ignore an `Enter` arriving <60 ms after a character (that's a scanner terminator, not the cashier)
-- [ ] **M1-10** Cart interactions fully keyboard-driven — arrow navigation, qty edit, line void
+- [x] **M1-07** Terminal layout — fixed appliance shape, dark, no navigation, **no scrolling during a sale**, F-key bar pinned at the bottom so positions become muscle memory <sub>done 2026-08-13</sub>
+- [x] **M1-08** The scan field is **always focused** — a barcode gun works with zero clicks <sub>done 2026-08-13</sub>
+- [x] **M1-09** Scanner/keyboard coexistence — never bind plain digits; ignore an `Enter` arriving <60 ms after a character (that's a scanner terminator, not the cashier) <sub>done 2026-08-13</sub>
+- [x] **M1-10** Cart interactions fully keyboard-driven — arrow navigation, qty edit, line void <sub>done 2026-08-13</sub>
 - [ ] **M1-11** Tender overlay — multi-tender, split payment, change calculation; **change due is larger than the total itself**
 - [ ] **M1-12** Per-terminal invoice numbering — locally issued blocks, `KND-T2-001047` = branch · terminal · local sequence within this terminal's reserved range
 - [ ] **M1-13** ESC/POS receipt renderer
@@ -171,6 +171,7 @@ The terminal screen, for real, against the local backend.
 - [ ] **M1-15** `SALE` stock movement written inside the sale transaction
 - [ ] **M1-16** Playwright keyboard-only spec — completes a full sale and asserts no `click` event is dispatched
 - [x] **M1-17** Resolve open decision **D3** (brand palette beyond the terminal's darkened accent) <sub>done 2026-08-13</sub>
+- [ ] **M1-18** **Per-line tax rates.** `cartTotals` takes one `TaxStamp` for the whole cart, and `sales` stores one `tax_mode`/`tax_rate_bp`. A cart mixing an 18% line with an exempt one would price the exempt line at 18%. The till currently **refuses** such a cart rather than selling it quietly wrong; lifting this needs a per-line stamp in the domain and a schema change. Found building M1-07.
 
 > **⛔ Gate M1** — A cashier completes **20 consecutive sales without touching a mouse**.
 >
@@ -337,27 +338,29 @@ Run every item before every release, not once per milestone.
 
 Append-only. One row per gate attempt (pass or fail) and per significant course change.
 
-| Date       | Milestone | Gate result | Note                                                                                                                                                                                                                                                                         |
-| ---------- | --------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                                                                                          |
-| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                                                                                            |
-| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                                                                                                   |
-| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                                                                                           |
-| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                                                                                                      |
-| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                                                                                                  |
-| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                                                                                              |
-| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                                                                                             |
-| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                                                                                           |
-| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                                                                                                  |
-| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                                                                                        |
-| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                                                                                            |
-| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                                                                                                    |
-| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                                                                                                |
-| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window.                                                                        |
-| 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't.                                        |
-| 2026-08-13 | M1-01→05  | —           | Money layer done. 53 domain tests, property-based. Cash rounding decided (**awaiting sign-off**). Four domain-computed carts accepted by the Java checksum, including a 1-cent discount over four lines. Properties caught a negative-zero bug on first run.                 |
-| 2026-08-13 | M1-06     | —           | `V103` — barcodes became their own table, `products.barcode` dropped after carrying its values across. Trigram search, ranked. Backend suite 38 → 53. Verified against the live database, not just an empty one; the dev seed turned out not to be idempotent and was fixed. |
-| 2026-08-13 | **D6**    | —           | **Settled: the till gets light mode**, explicit and persisted, defaulting to dark. Exposed four AA failures in the light palette — amber carrying the offline warning was at 3.38:1 — all fixed and re-measured in the running window.                                       |
+| Date       | Milestone | Gate result | Note                                                                                                                                                                                                                                                                                                      |
+| ---------- | --------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-12 | —         | —           | Roadmap created from the development guide. Greenfield, pnpm + Turborepo confirmed.                                                                                                                                                                                                                       |
+| 2026-08-12 | M0-01     | —           | Monorepo scaffolded. `typecheck`, `lint`, `test`, `build`, `format:check` all green; terminal emits standalone output. Three toolchain deviations recorded below.                                                                                                                                         |
+| 2026-08-12 | M0-02     | —           | Two Postgres 16.6 containers up and healthy (`lumora_local` :5442, `lumora_cloud` :5443), TZ `Asia/Colombo`. Moved off 5432/5433 — see the port map below.                                                                                                                                                |
+| 2026-08-12 | M0-02     | —           | Old POS stack stopped and its restart policy set to `no`, freeing :3000 and :8081. All of its volumes left intact.                                                                                                                                                                                        |
+| 2026-08-12 | M0-03     | —           | Backend boots on both profiles; Flyway applied `V1`; health UP; desktop profile verified **refused on the LAN IP**. `mvnw clean verify` green, 3 tests.                                                                                                                                                   |
+| 2026-08-12 | M0-04     | —           | `V100__minimal_schema.sql` applied to `lumora_local`. 16 tests green, including structural guards on idempotency, movements-not-balances and integer money.                                                                                                                                               |
+| 2026-08-12 | M0-05     | —           | `POST /api/sales` live. 23 tests green. End-to-end over HTTP: 201 → `KND-T2-000001`, identical retry → 200 with no duplicate, bad totals → 422.                                                                                                                                                           |
+| 2026-08-12 | M0-06     | —           | Electron shell hosting the renderer. A sale rung up by clicking the real button: `KND-T1-000001`, 3 × 450.00, VAT 205.93 extracted, `-3` movement, 1 outbox row.                                                                                                                                          |
+| 2026-08-12 | M0-07     | —           | Cloud profile + `POST /api/sync/batch`, idempotent upsert on `client_uuid`, per-item accept/reject. Own schema (`V200`) and its own test database.                                                                                                                                                        |
+| 2026-08-12 | M0-08     | —           | `@Scheduled` outbox drain with capped exponential backoff. 9 worker tests, almost all of them failure-path.                                                                                                                                                                                               |
+| 2026-08-12 | M0-09     | —           | Status strip verified live in Electron in all three states: `ONLINE · All sales synced`, `↑ 1 SYNCING`, `OFFLINE — sales saving locally · 1 waiting`.                                                                                                                                                     |
+| 2026-08-12 | **M0**    | **PASSED**  | **Gate M0.** 10 sales offline → cloud restored → 11 in cloud, 11 distinct uuids, 0 duplicates, 0 missing. Batch replayed: row counts unchanged. 38 backend tests.                                                                                                                                         |
+| 2026-08-13 | —         | —           | Pushed to `github.com/LumoraTechSolution/NewStorex` — `development` first, `main` only after all gates passed. That branch flow is the standing workflow.                                                                                                                                                 |
+| 2026-08-13 | M1-17     | —           | Product named **StoreX**, "Powered by Lumora Tech". **D3 settled** on logo blue `#0FA0F3` — see the brand/accent split below.                                                                                                                                                                             |
+| 2026-08-13 | M1-17     | —           | Verified in Electron. Caught the tender button at **2.42:1** (`text-white` on brand blue) — Tailwind exposed no ink token. Fixed to **6.61:1**; sale `KND-T1-000015` rung up through the real window.                                                                                                     |
+| 2026-08-13 | M4-05     | —           | Light/dark tokens landed early. The console followed the OS in name only — its layout comment promised it, `tokens.css` had no `prefers-color-scheme` block at all. Terminal stays dark; **D6** opened for whether it ever shouldn't.                                                                     |
+| 2026-08-13 | M1-01→05  | —           | Money layer done. 53 domain tests, property-based. Cash rounding decided (**awaiting sign-off**). Four domain-computed carts accepted by the Java checksum, including a 1-cent discount over four lines. Properties caught a negative-zero bug on first run.                                              |
+| 2026-08-13 | M1-06     | —           | `V103` — barcodes became their own table, `products.barcode` dropped after carrying its values across. Trigram search, ranked. Backend suite 38 → 53. Verified against the live database, not just an empty one; the dev seed turned out not to be idempotent and was fixed.                              |
+| 2026-08-13 | **D6**    | —           | **Settled: the till gets light mode**, explicit and persisted, defaulting to dark. Exposed four AA failures in the light palette — amber carrying the offline warning was at 3.38:1 — all fixed and re-measured in the running window.                                                                    |
+| 2026-08-13 | M1-03     | —           | Cash rounding **signed off**: nearest rupee, halves away from zero, applied to the tender and never to the sale.                                                                                                                                                                                          |
+| 2026-08-13 | M1-07→10  | —           | The appliance. Fixed shell, F-key bar with every slot held, always-focused scan field, keyboard cart. One full sale driven with **0 clicks** — `KND-T1-000020`, 1,710.00. The gun's Enter correctly did **not** tender. **M1-18** raised: mixed tax rates in one cart are refused rather than sold wrong. |
 
 ### D3 — the brand blue is not the accent
 
@@ -385,6 +388,54 @@ all — white was the only thing to reach for. Against the brand blue that measu
 configs now expose `brand`/`brand-ink` and `accent`/`accent-ink`, and the button reads **6.61:1**.
 Nothing in the token file was wrong; the bug was that a component could not name the correct
 colour. A token nobody can reference does not exist.
+
+### M1-07 to M1-10 — the appliance
+
+**The shell never scrolls; one region inside it does.** The status strip, scan field, totals and
+F-key bar hold their positions for a whole shift, and only the cart list moves. "No scrolling during
+a sale" does not mean a long cart is impossible — it means the cashier never loses sight of the
+total or the keys because the list grew.
+
+**Every F-key slot is rendered whether or not it does anything yet.** F5 Discount, F7 Hold, F9
+Return and the rest sit greyed in their places until the milestone that fills them. The point of the
+bar is that a cashier learns "void is fourth from the left" with their hand rather than their eyes,
+and a bar that reflowed as features landed would retrain them every release.
+
+**Scanning merges rather than appends.** Four passes of the same tin reads "4" on one row. Appending
+would fill the screen with rows the cashier then has to verify against the basket.
+
+#### The two scanner rules, and the bug each prevents
+
+A USB gun is a keyboard; nothing in the DOM says which device sent a keystroke.
+
+**Never bind a plain digit.** A barcode is a burst of digits. If `1` meant "quantity 1" or `7` meant
+"void", every scan would fire a handful of commands on its way past. Every global binding is a
+function key or an arrow for exactly this reason.
+
+**An `Enter` within 60ms of a character is the gun's terminator, not the cashier.** Without the
+guard, scanning would add the item _and_ trigger whatever Enter is bound to — on this screen,
+tendering. The cashier scans a second item and the first one has already been paid for and printed.
+60ms sits comfortably above a scanner's inter-character gap (typically under 15ms) and well below a
+human reaching for Enter. Both the scan field and the global handler consult one shared clock; two
+clocks would mean two answers about who typed.
+
+#### Verified with the keyboard only
+
+Driven through CDP `Input.dispatchKeyEvent`, so the keys traverse the real browser input pipeline
+rather than synthesised JS events. A click counter was armed at the document in capture phase first.
+
+| Step                                | Result                                      |
+| ----------------------------------- | ------------------------------------------- |
+| Scan `4791234567890` as a gun would | Ceylon Tea added — **and no sale tendered** |
+| Scan it again                       | merged to qty 2, one row                    |
+| Scan Milk Powder's **second** code  | resolved to the same product                |
+| Type "sugar", pause, Enter          | treated as a search, not a scan             |
+| ArrowUp, `+`, `-`, F4               | selection moved, qty edited, line voided    |
+| F12                                 | `KND-T1-000020` — 1,710.00                  |
+| **Clicks dispatched**               | **0**                                       |
+
+That is Gate M1's criterion for **one** sale. The gate itself is twenty consecutive, by a person, and
+stays unticked until that has actually been done.
 
 ### D6 — light mode on the till, and what it exposed
 
@@ -451,7 +502,7 @@ carried-over rows hold those codes under uuids derived from the product, so `ON 
 (client_uuid)` did not match and the statement aborted. Two products silently ended up with no
 barcode. Now a bare `ON CONFLICT DO NOTHING`, verified by running it twice.
 
-### M1-03 — the LKR cash rounding policy (needs sign-off)
+### M1-03 — the LKR cash rounding policy <sub>signed off 2026-08-13</sub>
 
 **Cash tenders round to the nearest LKR 1.00, halves away from zero. Everything else takes the
 exact amount.** Sri Lanka's circulating coinage is Rs 1, 2, 5 and 10, so a cash total of 450.50
