@@ -129,11 +129,18 @@ function createPrinterTransport(config) {
   return new TcpPrinterTransport(config);
 }
 
-/** Reads the transport config from the environment, so it is a deployment setting, not code. */
+/**
+ * Reads the transport config from the environment, so it is a deployment setting, not code.
+ *
+ * `host` defaults to loopback rather than being left unset: a till with no printer configured
+ * yet is the common case (a fresh dev machine, a shop mid-setup), and it must still be able to
+ * *start* — printing should fail on the first print attempt with a plain "unreachable" error,
+ * never at app launch by way of a transport that refused to even construct.
+ */
 function printerConfigFromEnv(env = process.env) {
   return {
     transport: env.LUMORA_PRINTER_TRANSPORT === 'serial' ? 'serial' : 'tcp',
-    host: env.LUMORA_PRINTER_HOST,
+    host: env.LUMORA_PRINTER_HOST || '127.0.0.1',
     port: env.LUMORA_PRINTER_PORT ? Number(env.LUMORA_PRINTER_PORT) : undefined,
     path: env.LUMORA_PRINTER_SERIAL_PATH,
     baudRate: env.LUMORA_PRINTER_BAUD_RATE ? Number(env.LUMORA_PRINTER_BAUD_RATE) : undefined,

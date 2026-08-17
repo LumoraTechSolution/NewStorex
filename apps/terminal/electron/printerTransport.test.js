@@ -87,15 +87,17 @@ describe('createPrinterTransport', () => {
 });
 
 describe('printerConfigFromEnv', () => {
-  it('defaults to tcp and leaves unset values undefined', () => {
+  it('defaults to tcp against loopback — the app must still start with no printer configured', () => {
     const config = printerConfigFromEnv({});
     expect(config).toEqual({
       transport: 'tcp',
-      host: undefined,
+      host: '127.0.0.1',
       port: undefined,
       path: undefined,
       baudRate: undefined,
     });
+    // The point of the default: constructing a transport from it must never throw.
+    expect(() => createPrinterTransport(config)).not.toThrow();
   });
 
   it('reads every setting, parsing numbers', () => {

@@ -20,8 +20,18 @@ const RENDERER_URL = process.env.LUMORA_RENDERER_URL ?? 'http://127.0.0.1:3000';
 
 // Built once from the environment at startup, not per print: the transport itself holds no
 // open connection (see printerTransport.cjs), so there is nothing to keep fresh by rebuilding
-// it, and a bad config should surface at startup logs rather than on a cashier's first sale.
-const printerTransport = createPrinterTransport(printerConfigFromEnv());
+// it. Construction can still throw on a malformed config (e.g. LUMORA_PRINTER_TRANSPORT=serial
+// with no path) — caught here rather than left to propagate, because a config mistake must
+// degrade to "printing is broken" and nothing more. It must never be able to crash the whole
+// app before a single window has opened, which is what an uncaught throw at this point did.
+let printerTransport;
+let printerTransportError;
+try {
+  printerTransport = createPrinterTransport(printerConfigFromEnv());
+} catch (e) {
+  printerTransportError = e instanceof Error ? e.message : String(e);
+  console.error('Printer transport misconfigured, printing disabled:', printerTransportError);
+}
 
 /**
  * The sale is already committed by the time this runs (M1-11) — a print failure here is
@@ -29,6 +39,9 @@ const printerTransport = createPrinterTransport(printerConfigFromEnv());
  * renderer never needs a try/catch just to tell a cashier "receipt didn't print, sale is fine."
  */
 ipcMain.handle('printer:print', async (_event, bytes) => {
+  if (!printerTransport) {
+    return { ok: false, error: `Printer not configured: ${printerTransportError}` };
+  }
   try {
     await printerTransport.write(bytes);
     return { ok: true };
