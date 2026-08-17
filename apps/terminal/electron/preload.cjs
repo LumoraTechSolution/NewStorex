@@ -1,7 +1,7 @@
 // The entire surface the renderer gets from Node. Keep it small and explicit — every
 // function added here is one the renderer can be tricked into calling.
 
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('lumora', {
   shell: {
@@ -12,6 +12,13 @@ contextBridge.exposeInMainWorld('lumora', {
     electron: process.versions.electron,
   },
 
-  // Printing and drawer control land here in M1-14, as ipcRenderer.invoke calls that
-  // return once main has written the bytes.
+  printer: {
+    /**
+     * @param {Uint8Array} bytes a full ESC/POS buffer — a receipt, or a receipt with the
+     *   drawer kick appended (see `buildReceiptWithDrawerKick`). One IPC round trip either
+     *   way; the drawer is opened by the printer the bytes reach, not by a second command.
+     * @returns {Promise<{ok: true} | {ok: false, error: string}>}
+     */
+    print: (bytes) => ipcRenderer.invoke('printer:print', bytes),
+  },
 });

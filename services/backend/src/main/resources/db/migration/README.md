@@ -27,7 +27,7 @@ can tell at a glance which tier a migration belongs to.
 | Directory  | Highest |
 | ---------- | ------- |
 | `common/`  | `V1`    |
-| `desktop/` | `V101`  |
-| `cloud/`   | none    |
+| `desktop/` | `V105`  |
+| `cloud/`   | `V201`  |
 
 This table drifts. Trust the filesystem.

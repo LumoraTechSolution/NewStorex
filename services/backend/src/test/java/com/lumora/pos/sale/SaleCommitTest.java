@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -159,11 +160,138 @@ class SaleCommitTest {
                         0L,
                         6864L,
                         99999L, // does not equal subtotal - discount
-                        List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)));
+                        List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)),
+                        0L,
+                        0L,
+                        List.of(new CreateSaleRequest.Tender("CASH", 99999L)));
 
         assertThatThrownBy(() -> sales.commit(wrong))
                 .isInstanceOf(SaleRejectedException.class)
                 .hasMessageContaining("is not totalMinor");
+    }
+
+    @Test
+    void aSplitSaleWritesOnePaymentRowPerTenderInOrder() {
+        Fixture fixture = seed();
+        UUID saleUuid = UUID.randomUUID();
+        long lineTotal = 90000;
+
+        CreateSaleRequest request =
+                new CreateSaleRequest(
+                        saleUuid,
+                        fixture.branchCode(),
+                        "T1",
+                        null,
+                        "INCLUSIVE",
+                        1800,
+                        lineTotal,
+                        0L,
+                        lineTotal * 1800 / 11800,
+                        lineTotal,
+                        List.of(
+                                new CreateSaleRequest.Line(
+                                        fixture.productUuid(), 2, 45000L, 0L, lineTotal * 1800 / 11800, lineTotal)),
+                        0L,
+                        0L,
+                        List.of(
+                                new CreateSaleRequest.Tender("CARD", 60000L),
+                                new CreateSaleRequest.Tender("CASH", 30000L)));
+
+        SaleResponse response = sales.commit(request);
+
+        assertThat(response.changeMinor()).isZero();
+        List<Map<String, Object>> payments =
+                jdbc.queryForList(
+                        "SELECT line_no, kind, amount_minor FROM sale_payments WHERE sale_id = ? ORDER BY line_no",
+                        response.id());
+        assertThat(payments).hasSize(2);
+        assertThat(payments.get(0)).containsEntry("kind", "CARD").containsEntry("amount_minor", 60000L);
+        assertThat(payments.get(1)).containsEntry("kind", "CASH").containsEntry("amount_minor", 30000L);
+    }
+
+    @Test
+    void cashOverpaymentRecordsChangeAndTheOutboxPayloadCarriesIt() {
+        Fixture fixture = seed();
+        UUID saleUuid = UUID.randomUUID();
+        long lineTotal = 45000;
+
+        CreateSaleRequest request =
+                new CreateSaleRequest(
+                        saleUuid,
+                        fixture.branchCode(),
+                        "T1",
+                        null,
+                        "INCLUSIVE",
+                        1800,
+                        lineTotal,
+                        0L,
+                        lineTotal * 1800 / 11800,
+                        lineTotal,
+                        List.of(
+                                new CreateSaleRequest.Line(
+                                        fixture.productUuid(), 1, lineTotal, 0L, lineTotal * 1800 / 11800, lineTotal)),
+                        0L,
+                        55000L, // customer handed over 1000.00 against a 450.00 sale
+                        List.of(new CreateSaleRequest.Tender("CASH", 100000L)));
+
+        SaleResponse response = sales.commit(request);
+
+        assertThat(response.changeMinor()).isEqualTo(55000L);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT change_minor FROM sales WHERE id = ?", Long.class, response.id()))
+                .isEqualTo(55000L);
+        assertThat(jsonField(saleUuid, "changeMinor")).isEqualTo("55000");
+    }
+
+    @Test
+    void tendersThatDoNotCoverTheTotalAreRejected() {
+        Fixture fixture = seed();
+        CreateSaleRequest request =
+                new CreateSaleRequest(
+                        UUID.randomUUID(),
+                        fixture.branchCode(),
+                        "T1",
+                        null,
+                        "INCLUSIVE",
+                        1800,
+                        45000L,
+                        0L,
+                        6864L,
+                        45000L,
+                        List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)),
+                        0L,
+                        0L,
+                        List.of(new CreateSaleRequest.Tender("CASH", 30000L))); // short by 150.00
+
+        assertThatThrownBy(() -> sales.commit(request))
+                .isInstanceOf(SaleRejectedException.class)
+                .hasMessageContaining("tenders sum to");
+    }
+
+    @Test
+    void changeCannotBeClaimedWithoutACashTender() {
+        Fixture fixture = seed();
+        CreateSaleRequest request =
+                new CreateSaleRequest(
+                        UUID.randomUUID(),
+                        fixture.branchCode(),
+                        "T1",
+                        null,
+                        "INCLUSIVE",
+                        1800,
+                        45000L,
+                        0L,
+                        6864L,
+                        45000L,
+                        List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)),
+                        0L,
+                        10000L, // a card cannot hand back change
+                        List.of(new CreateSaleRequest.Tender("CARD", 55000L)));
+
+        assertThatThrownBy(() -> sales.commit(request))
+                .isInstanceOf(SaleRejectedException.class)
+                .hasMessageContaining("no CASH tender was recorded");
     }
 
     /**
@@ -202,7 +330,10 @@ class SaleCommitTest {
                         0L,
                         6864L,
                         45000L,
-                        List.of(new CreateSaleRequest.Line(ghost, 1, 45000L, 0L, 6864L, 45000L)));
+                        List.of(new CreateSaleRequest.Line(ghost, 1, 45000L, 0L, 6864L, 45000L)),
+                        0L,
+                        0L,
+                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)));
 
         assertThatThrownBy(() -> sales.commit(request))
                 .isInstanceOf(SaleRejectedException.class)
@@ -226,7 +357,10 @@ class SaleCommitTest {
                 lineTotal,
                 List.of(
                         new CreateSaleRequest.Line(
-                                fixture.productUuid(), qty, unitPrice, 0L, lineTotal * 1800 / 11800, lineTotal)));
+                                fixture.productUuid(), qty, unitPrice, 0L, lineTotal * 1800 / 11800, lineTotal)),
+                0L,
+                0L,
+                List.of(new CreateSaleRequest.Tender("CASH", lineTotal)));
     }
 
     private CreateSaleRequest requestOn(UUID saleUuid, Fixture fixture, String terminalCode) {
@@ -242,7 +376,10 @@ class SaleCommitTest {
                 base.discountMinor(),
                 base.taxMinor(),
                 base.totalMinor(),
-                base.lines());
+                base.lines(),
+                base.roundingAdjustmentMinor(),
+                base.changeMinor(),
+                base.tenders());
     }
 
     private Integer count(String sql, Object... args) {

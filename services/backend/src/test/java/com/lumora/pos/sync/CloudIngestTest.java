@@ -115,6 +115,60 @@ class CloudIngestTest {
         assertThat(result.rejected().get(0).reason()).contains("Unsupported aggregate kind");
     }
 
+    /**
+     * M1-11: tenders, the rounding adjustment and change ride inside the same sale payload and
+     * land in their own table, the same way lines do.
+     */
+    @Test
+    void aBatchWithSplitTendersLandsInSalePayments() {
+        UUID saleUuid = UUID.randomUUID();
+        String payload =
+                """
+                {
+                  "clientUuid": "%s",
+                  "branchCode": "KND",
+                  "terminalCode": "T1",
+                  "invoiceNumber": "KND-T1-000030",
+                  "soldAt": "2026-08-12T04:30:00Z",
+                  "taxMode": "INCLUSIVE",
+                  "taxRateBp": 1800,
+                  "subtotalMinor": 90000,
+                  "discountMinor": 0,
+                  "taxMinor": 13728,
+                  "totalMinor": 90000,
+                  "roundingAdjustmentMinor": 0,
+                  "changeMinor": 10000,
+                  "lines": [{
+                    "productClientUuid": "00000000-0000-4000-8000-000000000101",
+                    "lineNo": 1, "qty": 2,
+                    "unitPriceMinor": 45000, "discountMinor": 0,
+                    "taxMinor": 13728, "lineTotalMinor": 90000
+                  }],
+                  "tenders": [
+                    { "lineNo": 1, "kind": "CARD", "amountMinor": 60000 },
+                    { "lineNo": 2, "kind": "CASH", "amountMinor": 40000 }
+                  ]
+                }
+                """
+                        .formatted(saleUuid);
+
+        SyncBatchResult result =
+                ingest.ingest(new SyncBatch(TENANT, "Kandy Stores", List.of(new SyncBatch.Item("sale", saleUuid, json(payload)))));
+
+        assertThat(result.accepted()).containsExactly(saleUuid);
+
+        Long saleId = jdbc.queryForObject("SELECT id FROM sales WHERE client_uuid = ?", Long.class, saleUuid);
+        assertThat(jdbc.queryForObject("SELECT change_minor FROM sales WHERE id = ?", Long.class, saleId))
+                .isEqualTo(10000L);
+
+        List<String> kinds =
+                jdbc.queryForList(
+                        "SELECT kind FROM sale_payments WHERE sale_id = ? ORDER BY line_no",
+                        String.class,
+                        saleId);
+        assertThat(kinds).containsExactly("CARD", "CASH");
+    }
+
     @Test
     void theTenantIsCreatedOnFirstSight() {
         ingest.ingest(batchWith(UUID.randomUUID(), "KND-T1-000020"));

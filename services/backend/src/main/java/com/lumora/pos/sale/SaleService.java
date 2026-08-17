@@ -78,14 +78,21 @@ public class SaleService {
         }
 
         List<Map<String, Object>> linePayloads = insertLinesAndMovements(request, branch, saleId);
+        List<Map<String, Object>> tenderPayloads = insertPayments(request, saleId);
         outbox.enqueue(
                 branch.tenantId(),
                 "sale",
                 request.clientUuid(),
-                buildPayload(request, invoiceNumber, soldAt, linePayloads));
+                buildPayload(request, invoiceNumber, soldAt, linePayloads, tenderPayloads));
 
         return new SaleResponse(
-                request.clientUuid(), saleId, invoiceNumber, request.totalMinor(), soldAt, false);
+                request.clientUuid(),
+                saleId,
+                invoiceNumber,
+                request.totalMinor(),
+                request.changeMinor(),
+                soldAt,
+                false);
     }
 
     // ------------------------------------------------------------------ consistency
@@ -114,6 +121,33 @@ public class SaleService {
             throw new SaleRejectedException(
                     "taxMinor %d exceeds totalMinor %d".formatted(request.taxMinor(), request.totalMinor()));
         }
+
+        // Same idea, for how the sale was paid. summariseTender (@lumora/domain) guarantees
+        // sum(tenders) - change == total + roundingAdjustment for any settled tender; this is
+        // that identity checked, not re-derived. roundingAdjustmentMinor may be negative (cash
+        // rounded down), so it is added rather than subtracted like the others.
+        long tenderedMinor =
+                request.tenders().stream().mapToLong(CreateSaleRequest.Tender::amountMinor).sum();
+        long expectedMinor = request.totalMinor() + request.roundingAdjustmentMinor();
+        if (tenderedMinor - request.changeMinor() != expectedMinor) {
+            throw new SaleRejectedException(
+                    "tenders sum to %d less changeMinor %d, but totalMinor %d plus roundingAdjustmentMinor %d is %d"
+                            .formatted(
+                                    tenderedMinor,
+                                    request.changeMinor(),
+                                    request.totalMinor(),
+                                    request.roundingAdjustmentMinor(),
+                                    expectedMinor));
+        }
+
+        // Only cash can be handed back — the checksum above cannot see *which* tender kind
+        // produced the change, only that some total of it was recorded.
+        if (request.changeMinor() > 0
+                && request.tenders().stream().noneMatch(t -> "CASH".equals(t.kind()))) {
+            throw new SaleRejectedException(
+                    "changeMinor %d is positive but no CASH tender was recorded"
+                            .formatted(request.changeMinor()));
+        }
     }
 
     // ----------------------------------------------------------------------- writes
@@ -125,8 +159,8 @@ public class SaleService {
                 INSERT INTO sales (
                     client_uuid, tenant_id, branch_id, terminal_code, invoice_number,
                     subtotal_minor, discount_minor, tax_minor, total_minor,
-                    tax_mode, tax_rate_bp, sold_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tax_mode, tax_rate_bp, sold_at, rounding_adjustment_minor, change_minor)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -141,7 +175,33 @@ public class SaleService {
                 request.totalMinor(),
                 request.taxMode(),
                 request.taxRateBp(),
-                Timestamp.from(soldAt));
+                Timestamp.from(soldAt),
+                request.roundingAdjustmentMinor(),
+                request.changeMinor());
+    }
+
+    /** One row per tender line, in the same order the cashier entered them (M1-11). */
+    private List<Map<String, Object>> insertPayments(CreateSaleRequest request, long saleId) {
+        List<Map<String, Object>> payloads = new java.util.ArrayList<>();
+        int lineNo = 0;
+
+        for (CreateSaleRequest.Tender tender : request.tenders()) {
+            lineNo++;
+            jdbc.update(
+                    "INSERT INTO sale_payments (sale_id, line_no, kind, amount_minor) VALUES (?, ?, ?, ?)",
+                    saleId,
+                    lineNo,
+                    tender.kind(),
+                    tender.amountMinor());
+
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("lineNo", lineNo);
+            payload.put("kind", tender.kind());
+            payload.put("amountMinor", tender.amountMinor());
+            payloads.add(payload);
+        }
+
+        return payloads;
     }
 
     private List<Map<String, Object>> insertLinesAndMovements(
@@ -205,7 +265,8 @@ public class SaleService {
             CreateSaleRequest request,
             String invoiceNumber,
             Instant soldAt,
-            List<Map<String, Object>> lines) {
+            List<Map<String, Object>> lines,
+            List<Map<String, Object>> tenders) {
 
         Map<String, Object> payload = new HashMap<>();
         payload.put("clientUuid", request.clientUuid());
@@ -219,7 +280,10 @@ public class SaleService {
         payload.put("discountMinor", request.discountMinor());
         payload.put("taxMinor", request.taxMinor());
         payload.put("totalMinor", request.totalMinor());
+        payload.put("roundingAdjustmentMinor", request.roundingAdjustmentMinor());
+        payload.put("changeMinor", request.changeMinor());
         payload.put("lines", lines);
+        payload.put("tenders", tenders);
         return payload;
     }
 
@@ -229,7 +293,7 @@ public class SaleService {
         List<SaleResponse> found =
                 jdbc.query(
                         """
-                        SELECT id, invoice_number, total_minor, sold_at
+                        SELECT id, invoice_number, total_minor, change_minor, sold_at
                         FROM sales WHERE client_uuid = ?
                         """,
                         (rs, row) ->
@@ -238,6 +302,7 @@ public class SaleService {
                                         rs.getLong("id"),
                                         rs.getString("invoice_number"),
                                         rs.getLong("total_minor"),
+                                        rs.getLong("change_minor"),
                                         rs.getTimestamp("sold_at").toInstant(),
                                         true),
                         clientUuid);

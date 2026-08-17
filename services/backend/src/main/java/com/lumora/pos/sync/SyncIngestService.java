@@ -106,8 +106,8 @@ public class SyncIngestService {
                         INSERT INTO sales (
                             client_uuid, tenant_id, branch_code, terminal_code, invoice_number,
                             subtotal_minor, discount_minor, tax_minor, total_minor,
-                            tax_mode, tax_rate_bp, sold_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            tax_mode, tax_rate_bp, sold_at, rounding_adjustment_minor, change_minor)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT (client_uuid) DO UPDATE SET client_uuid = excluded.client_uuid
                         RETURNING id
                         """,
@@ -123,10 +123,15 @@ public class SyncIngestService {
                         number(payload, "totalMinor"),
                         text(payload, "taxMode"),
                         (int) number(payload, "taxRateBp"),
-                        Timestamp.from(Instant.parse(text(payload, "soldAt"))));
+                        Timestamp.from(Instant.parse(text(payload, "soldAt"))),
+                        // Older tills predate M1-11 and never sent these; treat their absence as
+                        // the settled-in-full-with-no-cash case rather than rejecting the batch.
+                        optionalNumber(payload, "roundingAdjustmentMinor"),
+                        optionalNumber(payload, "changeMinor"));
 
-        // A sale is immutable once rung up: the lines cannot have changed, so on redelivery
-        // there is nothing to do. Rewriting them would only risk turning a no-op into an edit.
+        // A sale is immutable once rung up: the lines and tenders cannot have changed, so on
+        // redelivery there is nothing to do. Rewriting them would only risk turning a no-op
+        // into an edit.
         Integer existingLines =
                 jdbc.queryForObject(
                         "SELECT count(*) FROM sale_items WHERE sale_id = ?", Integer.class, saleId);
@@ -156,6 +161,18 @@ public class SyncIngestService {
                     number(line, "taxMinor"),
                     number(line, "lineTotalMinor"));
         }
+
+        JsonNode tenders = payload.get("tenders");
+        if (tenders != null && tenders.isArray()) {
+            for (JsonNode tender : tenders) {
+                jdbc.update(
+                        "INSERT INTO sale_payments (sale_id, line_no, kind, amount_minor) VALUES (?, ?, ?, ?)",
+                        saleId,
+                        (int) number(tender, "lineNo"),
+                        text(tender, "kind"),
+                        number(tender, "amountMinor"));
+            }
+        }
     }
 
     // ------------------------------------------------------------------------ helpers
@@ -174,6 +191,12 @@ public class SyncIngestService {
             throw new IllegalArgumentException("Payload field '" + field + "' is not a number");
         }
         return value.asLong();
+    }
+
+    /** Like {@link #number}, but 0 when the field is absent — for fields older payloads lack. */
+    private static long optionalNumber(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        return value == null || !value.isNumber() ? 0L : value.asLong();
     }
 
     private static String describe(Exception e) {

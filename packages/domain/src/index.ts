@@ -18,6 +18,7 @@
  * | `vat.ts`      | extraction and addition, the `TaxStamp`                    | M1-02 |
  * | `cart.ts`     | line and order discounts, apportionment, cart totals       | M1-03 |
  * | `rounding.ts` | the LKR cash rounding policy                               | M1-03 |
+ * | `tender.ts`   | multi-tender, split payment, change calculation            | M1-11 |
  *
  * The invariants these uphold are stated once, in `cart.ts`, because they are the
  * contract the backend's checksum enforces. Property-based tests in `cart.test.ts` assert
@@ -28,3 +29,4 @@ export * from './money';
 export * from './vat';
 export * from './cart';
 export * from './rounding';
+export * from './tender';
