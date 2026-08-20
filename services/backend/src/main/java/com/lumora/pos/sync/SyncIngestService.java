@@ -129,6 +129,14 @@ public class SyncIngestService {
                         optionalNumber(payload, "roundingAdjustmentMinor"),
                         optionalNumber(payload, "changeMinor"));
 
+        // Movements are keyed on their own uuid, so they are ingested before the immutability
+        // check below rather than after it. Two reasons: the upsert is already a no-op on
+        // redelivery without needing that check, and a sale ingested by a build that predates
+        // this code can still have its movements backfilled when the shop resends. They carry no
+        // sale_id — a movement in the cloud is a fact about a product at a branch at a time, and
+        // returns and goods receipts will write the same table without a sale to hang from.
+        ingestMovements(tenantId, payload);
+
         // A sale is immutable once rung up: the lines and tenders cannot have changed, so on
         // redelivery there is nothing to do. Rewriting them would only risk turning a no-op
         // into an edit.
@@ -145,12 +153,21 @@ public class SyncIngestService {
         }
 
         for (JsonNode line : lines) {
+            // A till older than M1-18 sends no per-line stamp, because until M1-18 a cart
+            // could only hold one rate — so the sale's own stamp is not a fallback here, it
+            // is precisely what that till meant by the line. Same reasoning as the movements
+            // in M1-15: accept the older shape rather than making an upgrade a precondition
+            // for a shop's backlog reaching the cloud at all.
+            JsonNode lineTaxMode = line.get("taxMode");
+            JsonNode lineTaxRateBp = line.get("taxRateBp");
+
             jdbc.update(
                     """
                     INSERT INTO sale_items (
                         sale_id, line_no, product_client_uuid, qty,
-                        unit_price_minor, discount_minor, tax_minor, line_total_minor)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        unit_price_minor, discount_minor, tax_minor, line_total_minor,
+                        tax_mode, tax_rate_bp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     saleId,
                     (int) number(line, "lineNo"),
@@ -159,7 +176,13 @@ public class SyncIngestService {
                     number(line, "unitPriceMinor"),
                     number(line, "discountMinor"),
                     number(line, "taxMinor"),
-                    number(line, "lineTotalMinor"));
+                    number(line, "lineTotalMinor"),
+                    lineTaxMode != null && !lineTaxMode.isNull()
+                            ? lineTaxMode.asText()
+                            : text(payload, "taxMode"),
+                    lineTaxRateBp != null && !lineTaxRateBp.isNull()
+                            ? (int) lineTaxRateBp.asLong()
+                            : (int) number(payload, "taxRateBp"));
         }
 
         JsonNode tenders = payload.get("tenders");
@@ -172,6 +195,46 @@ public class SyncIngestService {
                         text(tender, "kind"),
                         number(tender, "amountMinor"));
             }
+        }
+    }
+
+    // --------------------------------------------------------------------- movements
+
+    /**
+     * Stock, as movements rather than a level (§A). The cloud never computes a balance from a
+     * column anyone updates — on hand is {@code Σ qty_delta}, which is why redelivering a batch has
+     * to add nothing rather than add the same numbers again.
+     *
+     * <p>{@code DO NOTHING} rather than {@code DO UPDATE}: a movement that already landed is
+     * historical fact, and the only correct response to being told about it twice is silence.
+     */
+    private void ingestMovements(long tenantId, JsonNode payload) {
+        JsonNode movements = payload.get("movements");
+        if (movements == null || !movements.isArray()) {
+            // A till older than M1-15 sends none. Its sale still ingests — the same tolerance
+            // the M1-11 tender fields get above — and its stock simply never reached the cloud.
+            return;
+        }
+
+        String branchCode = text(payload, "branchCode");
+        Timestamp occurredAt = Timestamp.from(Instant.parse(text(payload, "soldAt")));
+
+        for (JsonNode movement : movements) {
+            jdbc.update(
+                    """
+                    INSERT INTO stock_movements (
+                        client_uuid, tenant_id, branch_code, product_client_uuid,
+                        qty_delta, reason, occurred_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (client_uuid) DO NOTHING
+                    """,
+                    UUID.fromString(text(movement, "clientUuid")),
+                    tenantId,
+                    branchCode,
+                    UUID.fromString(text(movement, "productClientUuid")),
+                    (int) number(movement, "qtyDelta"),
+                    text(movement, "reason"),
+                    occurredAt);
         }
     }
 

@@ -48,6 +48,7 @@ function receiptDataFor(cart: Cart, outcome: TenderOutcome, committed: Committed
     taxMinor: cart.totals.taxMinor,
     taxRateBp: cart.totals.taxRateBp,
     taxMode: cart.totals.taxMode,
+    taxBreakdown: cart.totals.taxBreakdown,
     totalMinor: cart.totals.totalMinor,
     tenders: outcome.tenders,
     roundingAdjustmentMinor: outcome.roundingAdjustmentMinor,
@@ -158,10 +159,6 @@ export default function Page() {
   /** F12 from the cart screen: opens the tender overlay, does not commit anything yet. */
   const openTender = useCallback(() => {
     if (cart.lines.length === 0 || busy) return;
-    if (cart.blocked) {
-      setMessage({ tone: 'danger', text: cart.blocked });
-      return;
-    }
     setMessage(null);
     setTendering(true);
   }, [busy, cart]);
@@ -204,6 +201,11 @@ export default function Page() {
               discountMinor: line.discountMinor,
               taxMinor: line.taxMinor,
               lineTotalMinor: line.lineTotalMinor,
+              // The rate this line was actually charged at (M1-18). Sent even on a
+              // single-rate sale, where it equals the sale's: the alternative is a backend
+              // that has to know which of two shapes it is looking at.
+              taxMode: line.taxMode,
+              taxRateBp: line.taxRateBp,
             })),
             tenders: outcome.tenders.map((t) => ({ kind: t.kind, amountMinor: t.amountMinor })),
           }),

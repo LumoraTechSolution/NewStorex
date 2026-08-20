@@ -2,7 +2,7 @@
   "name": "@lumora/terminal",
   "version": "0.0.0",
   "private": true,
-  "description": "Lumora Terminal — cashier terminal and back office. Ships as a Windows installer and talks only to the local backend.",
+  "description": "Lumora Terminal \u2014 cashier terminal and back office. Ships as a Windows installer and talks only to the local backend.",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
     "rebuild:serial": "electron-rebuild --only=serialport",
     "clean": "node -e \"for (const d of ['.next','.turbo']) require('node:fs').rmSync(d,{recursive:true,force:true})\""
   },
@@ -27,6 +29,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",

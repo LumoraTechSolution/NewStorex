@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +28,12 @@ import org.springframework.test.context.TestPropertySource;
 class CloudIngestTest {
 
     private static final UUID TENANT = UUID.fromString("00000000-0000-4000-8000-0000000000aa");
+
+    /**
+     * Its own product, not the one {@link #saleItem} uses: the movement tests assert on a running
+     * sum, so they must not be reading rows some other test in this class left behind.
+     */
+    private static final UUID PRODUCT = UUID.fromString("00000000-0000-4000-8000-000000000155");
 
     @Autowired SyncIngestService ingest;
     @Autowired JdbcTemplate jdbc;
@@ -169,6 +176,82 @@ class CloudIngestTest {
         assertThat(kinds).containsExactly("CARD", "CASH");
     }
 
+    /** M1-15: the stock a sale moved has to arrive with it, or the cloud's on-hand is fiction. */
+    @Test
+    void aSaleCarriesItsStockMovementsIntoTheCloud() {
+        UUID saleUuid = UUID.randomUUID();
+        UUID movementUuid = UUID.randomUUID();
+
+        SyncBatchResult result =
+                ingest.ingest(batchWithMovements(saleUuid, "KND-T1-000040", movementUuid));
+
+        assertThat(result.accepted()).containsExactly(saleUuid);
+
+        List<Map<String, Object>> rows =
+                jdbc.queryForList(
+                        "SELECT branch_code, qty_delta, reason, occurred_at FROM stock_movements WHERE client_uuid = ?",
+                        movementUuid);
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0))
+                .containsEntry("branch_code", "KND")
+                .containsEntry("qty_delta", -2)
+                .containsEntry("reason", "SALE");
+        // The movement happened when the sale did, not when the network came back.
+        assertThat(rows.get(0).get("occurred_at").toString()).startsWith("2026-08-12");
+    }
+
+    /**
+     * The one that matters. On hand is Σ qty_delta, so a redelivered batch that inserted its
+     * movements again would not duplicate a visible row so much as silently change the answer to
+     * "how much stock is there" — the failure mode that has no error message.
+     */
+    @Test
+    void redeliveringABatchDoesNotMoveStockTwice() {
+        UUID saleUuid = UUID.randomUUID();
+        UUID movementUuid = UUID.randomUUID();
+        SyncBatch batch = batchWithMovements(saleUuid, "KND-T1-000041", movementUuid);
+
+        ingest.ingest(batch);
+        int onHandAfterFirst = onHandOf(PRODUCT);
+
+        ingest.ingest(batch);
+        ingest.ingest(batch);
+
+        assertThat(count("SELECT count(*) FROM stock_movements WHERE client_uuid = ?", movementUuid))
+                .isEqualTo(1);
+        assertThat(onHandOf(PRODUCT)).isEqualTo(onHandAfterFirst);
+    }
+
+    /**
+     * A till older than M1-15 sends no movements at all. Its sale must still ingest — the same
+     * tolerance the M1-11 tender fields get — because rejecting the batch would strand every sale
+     * behind it in the shop's outbox.
+     */
+    @Test
+    void aSaleWithoutMovementsStillIngests() {
+        UUID saleUuid = UUID.randomUUID();
+
+        SyncBatchResult result = ingest.ingest(batchWith(saleUuid, "KND-T1-000042"));
+
+        assertThat(result.accepted()).containsExactly(saleUuid);
+        assertThat(result.rejected()).isEmpty();
+    }
+
+    /** The same rule as the shop PC: the cloud holds movements, never a level to keep in step. */
+    @Test
+    void theCloudSchemaStoresNoStockLevel() {
+        Integer levelColumns =
+                jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND column_name IN ('quantity_on_hand', 'qty_on_hand', 'stock_level',
+                                              'stock_on_hand', 'balance', 'current_stock')
+                        """,
+                        Integer.class);
+        assertThat(levelColumns).isZero();
+    }
+
     @Test
     void theTenantIsCreatedOnFirstSight() {
         ingest.ingest(batchWith(UUID.randomUUID(), "KND-T1-000020"));
@@ -177,8 +260,136 @@ class CloudIngestTest {
 
     // -------------------------------------------------------------------- helpers
 
+    // ------------------------------------------------------------------ M1-18: per-line rates
+
+    @Test
+    void aMixedRateSaleKeepsEachLineRateAcrossTheWire() {
+        UUID saleUuid = UUID.randomUUID();
+
+        ingest.ingest(mixedRateBatch(saleUuid, "KND-T1-000200"));
+
+        List<Map<String, Object>> items =
+                jdbc.queryForList(
+                        "SELECT line_no, tax_mode, tax_rate_bp FROM sale_items WHERE sale_id ="
+                                + " (SELECT id FROM sales WHERE client_uuid = ?) ORDER BY line_no",
+                        saleUuid);
+        assertThat(items).hasSize(2);
+        assertThat(items.get(0)).containsEntry("tax_rate_bp", 0);
+        assertThat(items.get(1)).containsEntry("tax_rate_bp", 1800);
+
+        // What the cloud can now answer and could not before: what was sold at each rate.
+        // Deriving it from sales.tax_rate_bp would have put the whole basket at 18%.
+        List<Map<String, Object>> byRate =
+                jdbc.queryForList(
+                        """
+                        SELECT tax_rate_bp, sum(tax_minor)::bigint AS tax FROM sale_items
+                        WHERE sale_id = (SELECT id FROM sales WHERE client_uuid = ?)
+                        GROUP BY tax_rate_bp ORDER BY tax_rate_bp
+                        """,
+                        saleUuid);
+        assertThat(byRate.get(0)).containsEntry("tax", 0L);
+        assertThat(byRate.get(1)).containsEntry("tax", 6864L);
+    }
+
+    /**
+     * A till older than M1-18 sends lines with no stamp, because until M1-18 a cart could only
+     * hold one rate. The sale's own stamp is not a fallback there, it is exactly what that till
+     * meant — so the row is still correct, not merely non-null. Same principle as {@link
+     * #aSaleWithoutMovementsStillIngests()}: a shop's backlog must never need an upgrade first.
+     */
+    @Test
+    void aSaleFromATillWithoutPerLineRatesInheritsTheSaleRate() {
+        UUID saleUuid = UUID.randomUUID();
+
+        ingest.ingest(batchWith(saleUuid, "KND-T1-000201"));
+
+        Map<String, Object> item =
+                jdbc.queryForMap(
+                        "SELECT tax_mode, tax_rate_bp FROM sale_items WHERE sale_id ="
+                                + " (SELECT id FROM sales WHERE client_uuid = ?)",
+                        saleUuid);
+        assertThat(item).containsEntry("tax_mode", "INCLUSIVE").containsEntry("tax_rate_bp", 1800);
+    }
+
+    /** Two lines at different rates: bread at 0%, tea at 18%. */
+    private SyncBatch mixedRateBatch(UUID saleUuid, String invoiceNumber) {
+        String payload =
+                """
+                {
+                  "clientUuid": "%s",
+                  "branchCode": "KND",
+                  "terminalCode": "T1",
+                  "invoiceNumber": "%s",
+                  "soldAt": "2026-08-12T04:30:00Z",
+                  "taxMode": "INCLUSIVE",
+                  "taxRateBp": 1800,
+                  "subtotalMinor": 95000,
+                  "discountMinor": 0,
+                  "taxMinor": 6864,
+                  "totalMinor": 95000,
+                  "lines": [{
+                    "productClientUuid": "%s",
+                    "lineNo": 1, "qty": 2,
+                    "unitPriceMinor": 25000, "discountMinor": 0,
+                    "taxMinor": 0, "lineTotalMinor": 50000,
+                    "taxMode": "INCLUSIVE", "taxRateBp": 0
+                  }, {
+                    "productClientUuid": "%s",
+                    "lineNo": 2, "qty": 1,
+                    "unitPriceMinor": 45000, "discountMinor": 0,
+                    "taxMinor": 6864, "lineTotalMinor": 45000,
+                    "taxMode": "INCLUSIVE", "taxRateBp": 1800
+                  }]
+                }
+                """
+                        .formatted(saleUuid, invoiceNumber, PRODUCT, PRODUCT);
+        return new SyncBatch(
+                TENANT, "Kandy Stores", List.of(new SyncBatch.Item("sale", saleUuid, json(payload))));
+    }
+
     private SyncBatch batchWith(UUID saleUuid, String invoiceNumber) {
         return new SyncBatch(TENANT, "Kandy Stores", List.of(saleItem(saleUuid, invoiceNumber)));
+    }
+
+    /** The M1-15 shape: the same sale, now carrying the movement its line caused. */
+    private SyncBatch batchWithMovements(UUID saleUuid, String invoiceNumber, UUID movementUuid) {
+        String payload =
+                """
+                {
+                  "clientUuid": "%s",
+                  "branchCode": "KND",
+                  "terminalCode": "T1",
+                  "invoiceNumber": "%s",
+                  "soldAt": "2026-08-12T04:30:00Z",
+                  "taxMode": "INCLUSIVE",
+                  "taxRateBp": 1800,
+                  "subtotalMinor": 90000,
+                  "discountMinor": 0,
+                  "taxMinor": 13728,
+                  "totalMinor": 90000,
+                  "lines": [{
+                    "productClientUuid": "%s",
+                    "lineNo": 1, "qty": 2,
+                    "unitPriceMinor": 45000, "discountMinor": 0,
+                    "taxMinor": 13728, "lineTotalMinor": 90000
+                  }],
+                  "movements": [{
+                    "clientUuid": "%s",
+                    "productClientUuid": "%s",
+                    "qtyDelta": -2,
+                    "reason": "SALE"
+                  }]
+                }
+                """
+                        .formatted(saleUuid, invoiceNumber, PRODUCT, movementUuid, PRODUCT);
+        return new SyncBatch(
+                TENANT, "Kandy Stores", List.of(new SyncBatch.Item("sale", saleUuid, json(payload))));
+    }
+
+    private int onHandOf(UUID productClientUuid) {
+        return count(
+                "SELECT coalesce(sum(qty_delta), 0) FROM stock_movements WHERE product_client_uuid = ?",
+                productClientUuid);
     }
 
     private SyncBatch.Item saleItem(UUID saleUuid, String invoiceNumber) {

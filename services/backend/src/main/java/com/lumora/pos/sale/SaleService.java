@@ -77,13 +77,19 @@ public class SaleService {
             throw raced;
         }
 
-        List<Map<String, Object>> linePayloads = insertLinesAndMovements(request, branch, saleId);
+        LinesAndMovements written = insertLinesAndMovements(request, branch, saleId);
         List<Map<String, Object>> tenderPayloads = insertPayments(request, saleId);
         outbox.enqueue(
                 branch.tenantId(),
                 "sale",
                 request.clientUuid(),
-                buildPayload(request, invoiceNumber, soldAt, linePayloads, tenderPayloads));
+                buildPayload(
+                        request,
+                        invoiceNumber,
+                        soldAt,
+                        written.lines(),
+                        written.movements(),
+                        tenderPayloads));
 
         return new SaleResponse(
                 request.clientUuid(),
@@ -120,6 +126,34 @@ public class SaleService {
         if (request.taxMinor() > request.totalMinor()) {
             throw new SaleRejectedException(
                     "taxMinor %d exceeds totalMinor %d".formatted(request.taxMinor(), request.totalMinor()));
+        }
+
+        // Since M1-18 the lines are the only thing that can say what tax a sale carried:
+        // with more than one rate in the basket there is no single rate to recompute it
+        // from. cartTotals sums the lines to get the sale's tax, so this identity holds by
+        // construction on the terminal — and a payload where it does not is one this
+        // service cannot record faithfully, whatever it does with it.
+        long lineTaxSum = request.lines().stream().mapToLong(CreateSaleRequest.Line::taxMinor).sum();
+        if (lineTaxSum != request.taxMinor()) {
+            throw new SaleRejectedException(
+                    "Line taxes sum to %d but taxMinor is %d".formatted(lineTaxSum, request.taxMinor()));
+        }
+
+        for (CreateSaleRequest.Line line : request.lines()) {
+            // A line's tax comes out of what was charged for it, which is at most its own
+            // total. Cheap, and it localises a bad line instead of only failing in aggregate.
+            if (line.taxMinor() > line.lineTotalMinor()) {
+                throw new SaleRejectedException(
+                        "Line for product %s has taxMinor %d exceeding lineTotalMinor %d"
+                                .formatted(line.productClientUuid(), line.taxMinor(), line.lineTotalMinor()));
+            }
+            // Half a stamp is a bug at the sender, not a shape to interpret: inheriting the
+            // missing half would silently pair one sale's mode with another line's rate.
+            if ((line.taxMode() == null) != (line.taxRateBp() == null)) {
+                throw new SaleRejectedException(
+                        "Line for product %s carries taxMode=%s and taxRateBp=%s — send both or neither"
+                                .formatted(line.productClientUuid(), line.taxMode(), line.taxRateBp()));
+            }
         }
 
         // Same idea, for how the sale was paid. summariseTender (@lumora/domain) guarantees
@@ -204,22 +238,30 @@ public class SaleService {
         return payloads;
     }
 
-    private List<Map<String, Object>> insertLinesAndMovements(
+    private LinesAndMovements insertLinesAndMovements(
             CreateSaleRequest request, Branch branch, long saleId) {
 
         List<Map<String, Object>> payloads = new java.util.ArrayList<>();
+        List<Map<String, Object>> movements = new java.util.ArrayList<>();
         int lineNo = 0;
 
         for (CreateSaleRequest.Line line : request.lines()) {
             lineNo++;
             long productId = resolveProductId(line.productClientUuid());
 
+            // Resolved once, here, and then used for both the row and the payload — so the
+            // rate the cloud stores is the rate the shop PC stored, never re-derived at the
+            // far end from a sale-level default that may not apply to this line (M1-18).
+            String lineTaxMode = line.effectiveTaxMode(request);
+            Integer lineTaxRateBp = line.effectiveTaxRateBp(request);
+
             jdbc.update(
                     """
                     INSERT INTO sale_items (
                         sale_id, product_id, line_no, qty,
-                        unit_price_minor, discount_minor, tax_minor, line_total_minor)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        unit_price_minor, discount_minor, tax_minor, line_total_minor,
+                        tax_mode, tax_rate_bp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     saleId,
                     productId,
@@ -228,10 +270,19 @@ public class SaleService {
                     line.unitPriceMinor(),
                     line.discountMinor(),
                     line.taxMinor(),
-                    line.lineTotalMinor());
+                    line.lineTotalMinor(),
+                    lineTaxMode,
+                    lineTaxRateBp);
 
             // Stock leaves the shelf. Negative, because stock on hand is the sum of these
             // rows and never a stored level.
+            //
+            // The uuid is generated here and then carried in the outbox payload rather than
+            // being minted again cloud-side: it is the idempotency key the cloud upserts on,
+            // so a redelivered batch has to arrive bearing the *same* one. A movement invented
+            // at the far end would be a new row on every retry, and stock on hand — being the
+            // sum of these — would drift down by a sale's worth each time.
+            UUID movementUuid = UUID.randomUUID();
             jdbc.update(
                     """
                     INSERT INTO stock_movements (
@@ -239,13 +290,20 @@ public class SaleService {
                         qty_delta, reason, ref_type, ref_id, created_by)
                     VALUES (?, ?, ?, ?, ?, 'SALE', 'sale', ?, ?)
                     """,
-                    UUID.randomUUID(),
+                    movementUuid,
                     branch.tenantId(),
                     branch.id(),
                     productId,
                     -line.qty(),
                     saleId,
                     SEEDED_OPERATOR_ID);
+
+            Map<String, Object> movement = new LinkedHashMap<>();
+            movement.put("clientUuid", movementUuid);
+            movement.put("productClientUuid", line.productClientUuid());
+            movement.put("qtyDelta", -line.qty());
+            movement.put("reason", "SALE");
+            movements.add(movement);
 
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("productClientUuid", line.productClientUuid());
@@ -255,10 +313,12 @@ public class SaleService {
             payload.put("discountMinor", line.discountMinor());
             payload.put("taxMinor", line.taxMinor());
             payload.put("lineTotalMinor", line.lineTotalMinor());
+            payload.put("taxMode", lineTaxMode);
+            payload.put("taxRateBp", lineTaxRateBp);
             payloads.add(payload);
         }
 
-        return payloads;
+        return new LinesAndMovements(payloads, movements);
     }
 
     private Map<String, Object> buildPayload(
@@ -266,6 +326,7 @@ public class SaleService {
             String invoiceNumber,
             Instant soldAt,
             List<Map<String, Object>> lines,
+            List<Map<String, Object>> movements,
             List<Map<String, Object>> tenders) {
 
         Map<String, Object> payload = new HashMap<>();
@@ -283,6 +344,7 @@ public class SaleService {
         payload.put("roundingAdjustmentMinor", request.roundingAdjustmentMinor());
         payload.put("changeMinor", request.changeMinor());
         payload.put("lines", lines);
+        payload.put("movements", movements);
         payload.put("tenders", tenders);
         return payload;
     }
@@ -352,4 +414,12 @@ public class SaleService {
     }
 
     private record Branch(long id, long tenantId, String code) {}
+
+    /**
+     * What one pass over the cart wrote: the sale lines, and the stock movements they caused. The
+     * two are produced together and must stay together — a line whose movement went missing is the
+     * failure mode this record exists to make impossible to introduce by accident.
+     */
+    private record LinesAndMovements(
+            List<Map<String, Object>> lines, List<Map<String, Object>> movements) {}
 }

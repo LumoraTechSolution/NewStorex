@@ -23,6 +23,25 @@ export interface ReceiptLine {
   readonly lineTotalMinor: number;
 }
 
+/**
+ * One rate's worth of the sale, structurally the domain's `TaxBreakdownEntry` but with plain
+ * numbers — like every other figure on {@link ReceiptData}.
+ *
+ * The domain's `Minor` brand exists to stop a float entering the money path. Nothing is
+ * computed here: the receipt renders a sale that was priced, committed and possibly read
+ * back out of JSON, and demanding branded values would mean re-branding every figure on a
+ * reprint for a guarantee the numbers already carry by having been through `cartTotals`.
+ * A branded value assigns straight into `number`, so a caller holding real domain values
+ * just passes them.
+ */
+export interface ReceiptTaxBreakdown {
+  readonly mode: 'INCLUSIVE' | 'EXCLUSIVE';
+  readonly rateBp: number;
+  readonly grossMinor: number;
+  readonly exVatMinor: number;
+  readonly taxMinor: number;
+}
+
 export interface ReceiptTender {
   readonly kind: TenderKind;
   readonly amountMinor: number;
@@ -41,8 +60,15 @@ export interface ReceiptData {
   readonly subtotalMinor: number;
   readonly discountMinor: number;
   readonly taxMinor: number;
+  /** The sale's default stamp — what a line inherited where it carried none (M1-05). */
   readonly taxRateBp: number;
   readonly taxMode: 'INCLUSIVE' | 'EXCLUSIVE';
+  /**
+   * What was charged at each rate (M1-18). Required, not optional: a receipt is the
+   * document the revenue authority reads, and a caller that forgot to pass this should
+   * fail to compile rather than quietly print a sale with its VAT summary missing.
+   */
+  readonly taxBreakdown: readonly ReceiptTaxBreakdown[];
   readonly totalMinor: number;
   readonly tenders: readonly ReceiptTender[];
   readonly roundingAdjustmentMinor: number;
@@ -87,9 +113,9 @@ export function buildReceipt(data: ReceiptData, width = DEFAULT_WIDTH): Uint8Arr
   if (data.discountMinor > 0) {
     chunks.push(esc.line(twoColumn('Discount', `-${formatMinor(data.discountMinor)}`, width)));
   }
-  chunks.push(
-    esc.line(twoColumn(taxLabel(data.taxMode, data.taxRateBp), formatMinor(data.taxMinor), width)),
-  );
+  for (const text of taxSummary(data, width)) {
+    chunks.push(esc.line(text));
+  }
   chunks.push(esc.line(divider(width)));
 
   chunks.push(esc.bold(true));
@@ -127,11 +153,122 @@ export function buildReceiptWithDrawerKick(data: ReceiptData, width = DEFAULT_WI
   return esc.concatBytes([buildReceipt(data, width), esc.openDrawer()]);
 }
 
+// ----------------------------------------------------------------------------- VAT summary
+
+/**
+ * The tax block (M1-18).
+ *
+ * Two shapes, for one reason each.
+ *
+ * **Every receipt prints the net.** A tax invoice has to show the amount excluding tax, the
+ * tax, and the total as three separate figures. Until now this receipt printed the VAT and
+ * the total and left the net to be inferred by subtraction, which is not the same as
+ * stating it. Under an inclusive regime the net is never written on anything else, so if
+ * the receipt does not say it, nothing does.
+ *
+ * **A mixed sale prints a table.** One row per rate, because the whole point of separating
+ * an exempt line from a standard-rated one is that the two sums are legible apart. A single
+ * "VAT" figure spanning both rates answers a question nobody asked. Almost every sale in a
+ * shop is one rate, so the common case stays two lines rather than paying a table's height
+ * in paper for a table with one row in it.
+ *
+ * The rate is printed even when it is zero. "0%" is a statement that the line was
+ * considered and found exempt; a blank is an omission, and they look identical afterwards.
+ */
+function taxSummary(data: ReceiptData, width: number): string[] {
+  if (data.taxBreakdown.length > 1) {
+    return mixedTaxSummary(data, width);
+  }
+
+  // The sale's own stamp, unless the single breakdown entry disagrees — it is the line-level
+  // truth and the sale-level pair is only the default the lines inherited.
+  const only = data.taxBreakdown[0];
+  const mode = only?.mode ?? data.taxMode;
+  const rateBp = only?.rateBp ?? data.taxRateBp;
+  const exVatMinor = only?.exVatMinor ?? data.totalMinor - data.taxMinor;
+
+  return [
+    twoColumn('Net (excl. VAT)', formatMinor(exVatMinor), width),
+    twoColumn(taxLabel(mode, rateBp), formatMinor(data.taxMinor), width),
+  ];
+}
+
+/**
+ * The mixed-rate table.
+ *
+ * Columns are derived from the paper width rather than fixed, because the same code prints
+ * to 80mm Font A (42 columns) and to a 58mm roll (32), and a money table that overflows its
+ * width wraps into nonsense. What gives way on narrow paper is the **Gross** column: it is
+ * exactly Net + VAT, both of which are in the row already, so it is the only figure the
+ * reader can reconstruct without doing arithmetic the receipt should have done for them.
+ *
+ * Within a width the columns are fixed, not measured against the amounts. A table whose
+ * columns move with its contents stops being a table — these figures are read down the
+ * column, not across the row.
+ */
+const RATE_COLUMN = 5;
+
+/** The narrowest paper that can hold Net, VAT and Gross side by side and still be read. */
+const GROSS_COLUMN_MIN_WIDTH = 40;
+
+function tableColumns(width: number): { columns: number[]; showGross: boolean } {
+  const showGross = width >= GROSS_COLUMN_MIN_WIDTH;
+  const count = showGross ? 3 : 2;
+  const rest = Math.max(count * 6, width - RATE_COLUMN);
+  const each = Math.floor(rest / count);
+
+  // The last column absorbs the remainder, so the row is exactly `width` wide and its right
+  // edge lines up with the Subtotal and TOTAL figures above and below it.
+  const columns = Array.from({ length: count }, (_, i) =>
+    i === count - 1 ? rest - each * (count - 1) : each,
+  );
+  return { columns, showGross };
+}
+
+function mixedTaxSummary(data: ReceiptData, width: number): string[] {
+  const { showGross } = tableColumns(width);
+
+  const amounts = (entry: ReceiptTaxBreakdown): string[] => {
+    const cells = [formatMinor(entry.exVatMinor), formatMinor(entry.taxMinor)];
+    return showGross ? [...cells, formatMinor(entry.grossMinor)] : cells;
+  };
+
+  // A total row, so the block reconciles on the paper rather than in the reader's head. Its
+  // gross is the sale total printed just below and its VAT is the sale's tax — stated here
+  // anyway, because a column of figures that stops without a sum invites the reader to add
+  // it up themselves and disagree.
+  const exVatMinor = data.taxBreakdown.reduce((sum, e) => sum + e.exVatMinor, 0);
+  const grossMinor = data.taxBreakdown.reduce((sum, e) => sum + e.grossMinor, 0);
+  const totals = [formatMinor(exVatMinor), formatMinor(data.taxMinor)];
+
+  return [
+    'VAT SUMMARY',
+    tableRow('Rate', showGross ? ['Net', 'VAT', 'Gross'] : ['Net', 'VAT'], width),
+    ...data.taxBreakdown.map((entry) => tableRow(ratePercent(entry.rateBp), amounts(entry), width)),
+    ruleRow(width),
+    tableRow('', showGross ? [...totals, formatMinor(grossMinor)] : totals, width),
+  ];
+}
+
+function tableRow(rate: string, amounts: string[], width: number): string {
+  const { columns } = tableColumns(width);
+  return rate.padStart(RATE_COLUMN) + amounts.map((v, i) => v.padStart(columns[i]!)).join('');
+}
+
+/** Underlines each amount column, so the rule sits exactly under the figures it totals. */
+function ruleRow(width: number): string {
+  const { columns } = tableColumns(width);
+  return ' '.repeat(RATE_COLUMN) + columns.map((c) => '-'.repeat(c - 1).padStart(c)).join('');
+}
+
+function ratePercent(rateBp: number): string {
+  return `${(rateBp / 100).toFixed(rateBp % 100 === 0 ? 0 : 2)}%`;
+}
+
 // ------------------------------------------------------------------------------- formatting
 
 function taxLabel(mode: 'INCLUSIVE' | 'EXCLUSIVE', rateBp: number): string {
-  const pct = (rateBp / 100).toFixed(rateBp % 100 === 0 ? 0 : 2);
-  return `VAT ${pct}% (${mode === 'INCLUSIVE' ? 'incl.' : 'excl.'})`;
+  return `VAT ${ratePercent(rateBp)} (${mode === 'INCLUSIVE' ? 'incl.' : 'excl.'})`;
 }
 
 function formatSigned(amountMinor: number): string {

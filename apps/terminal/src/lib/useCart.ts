@@ -25,8 +25,6 @@ export type Cart = {
   totals: CartTotals;
   /** Index of the line the keyboard is on, or -1 when the cart is empty. */
   selected: number;
-  /** Set when the cart mixes tax treatments, which the domain cannot price yet. See M1-18. */
-  blocked: string | null;
 };
 
 const DEFAULT_STAMP = taxStamp('INCLUSIVE', 0);
@@ -42,36 +40,27 @@ export function useCart() {
   const [lines, setLines] = useState<CartLine[]>([]);
   const [selected, setSelected] = useState(-1);
 
-  const { totals, blocked } = useMemo(() => {
-    if (lines.length === 0) {
-      return { totals: emptyCartTotals(DEFAULT_STAMP), blocked: null };
-    }
+  const totals = useMemo(() => {
+    if (lines.length === 0) return emptyCartTotals(DEFAULT_STAMP);
 
-    // One stamp per sale is what the schema and the domain currently express (M1-05).
-    // A cart mixing an 18% line with an exempt one would price the exempt line at 18%,
-    // so it is refused loudly rather than sold quietly wrong. M1-18 lifts this.
+    // Every line carries the rate off its own product (M1-18). A basket of bread at 0% and
+    // arrack at 18% is priced correctly rather than refused, which is what the till did
+    // until this landed — `cartTotals` groups the result into `taxBreakdown` for the
+    // totals panel and the receipt's VAT summary.
+    //
+    // The sale-level stamp is the *default* for a line that brought none, and the terminal
+    // has no such line: it is the first product's, which on the ordinary single-rate sale
+    // is every product's. It is what `sales.tax_mode` / `sales.tax_rate_bp` record.
     const first = lines[0]!.product;
-    const mixed = lines.find(
-      (l) => l.product.taxMode !== first.taxMode || l.product.taxRateBp !== first.taxRateBp,
-    );
-    if (mixed) {
-      return {
-        totals: emptyCartTotals(taxStamp(first.taxMode, first.taxRateBp)),
-        blocked: `${mixed.product.name} is taxed differently from ${first.name}. Mixed tax rates in one sale are not supported yet (M1-18).`,
-      };
-    }
-
-    return {
-      totals: cartTotals({
-        lines: lines.map((l) => ({
-          productClientUuid: l.product.clientUuid,
-          qty: l.qty,
-          unitPriceMinor: l.product.priceMinor,
-        })),
-        tax: taxStamp(first.taxMode, first.taxRateBp),
-      }),
-      blocked: null,
-    };
+    return cartTotals({
+      lines: lines.map((l) => ({
+        productClientUuid: l.product.clientUuid,
+        qty: l.qty,
+        unitPriceMinor: l.product.priceMinor,
+        tax: taxStamp(l.product.taxMode, l.product.taxRateBp),
+      })),
+      tax: taxStamp(first.taxMode, first.taxRateBp),
+    });
   }, [lines]);
 
   /**
@@ -150,6 +139,6 @@ export function useCart() {
     });
   }, []);
 
-  const cart: Cart = { lines, totals, selected, blocked };
+  const cart: Cart = { lines, totals, selected };
   return { cart, addProduct, changeQty, setQty, voidLine, clear, move, setSelected };
 }

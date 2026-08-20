@@ -61,10 +61,34 @@ const BASE: ReceiptData = {
   taxMinor: 57102,
   taxRateBp: 1800,
   taxMode: 'INCLUSIVE',
+  taxBreakdown: [
+    { mode: 'INCLUSIVE', rateBp: 1800, grossMinor: 375000, exVatMinor: 317898, taxMinor: 57102 },
+  ],
   totalMinor: 375000,
   tenders: [{ kind: 'CASH', amountMinor: 400000 }],
   roundingAdjustmentMinor: 0,
   changeMinor: 25000,
+};
+
+/**
+ * The basket M1-18 exists for: bread at 0% next to arrack at 18%, which the till refused
+ * outright until per-line rates landed. Figures come straight from `cartTotals`.
+ */
+const MIXED: ReceiptData = {
+  ...BASE,
+  lines: [
+    { name: 'Bread 450g', qty: 2, unitPriceMinor: 25000, lineTotalMinor: 50000 },
+    { name: 'Arrack 750ml', qty: 1, unitPriceMinor: 450000, lineTotalMinor: 450000 },
+  ],
+  subtotalMinor: 500000,
+  taxMinor: 68644,
+  totalMinor: 500000,
+  taxBreakdown: [
+    { mode: 'INCLUSIVE', rateBp: 0, grossMinor: 50000, exVatMinor: 50000, taxMinor: 0 },
+    { mode: 'INCLUSIVE', rateBp: 1800, grossMinor: 450000, exVatMinor: 381356, taxMinor: 68644 },
+  ],
+  tenders: [{ kind: 'CASH', amountMinor: 500000 }],
+  changeMinor: 0,
 };
 
 describe('buildReceipt', () => {
@@ -112,6 +136,20 @@ describe('buildReceipt', () => {
     expect(printed).toContain('3,750.00');
   });
 
+  it('states the net excluding VAT rather than leaving it to be inferred', () => {
+    // A tax invoice has to show net, tax and total as three separate figures. Under an
+    // inclusive regime the net appears on nothing else, so if the receipt omits it the
+    // customer has no document that states it at all.
+    const printed = decode(buildReceipt(BASE));
+    expect(printed).toContain('Net (excl. VAT)');
+    expect(printed).toContain('3,178.98');
+  });
+
+  it('keeps a single-rate sale to two lines rather than printing a one-row table', () => {
+    const printed = decode(buildReceipt(BASE));
+    expect(printed).not.toContain('VAT SUMMARY');
+  });
+
   it('lists every tender line by kind', () => {
     const split: ReceiptData = {
       ...BASE,
@@ -148,11 +186,23 @@ describe('buildReceipt', () => {
   });
 
   it('never lets a text line exceed the configured width', () => {
-    const width = 32;
-    const lines = textLines(buildReceipt(BASE, width)).filter((l) => l.length > 0);
-    for (const l of lines) {
-      expect(l.length).toBeLessThanOrEqual(width);
+    for (const data of [BASE, MIXED]) {
+      for (const width of [32, 42]) {
+        const lines = textLines(buildReceipt(data, width)).filter((l) => l.length > 0);
+        for (const l of lines) {
+          expect(l.length).toBeLessThanOrEqual(width);
+        }
+      }
     }
+  });
+
+  it('keeps the VAT table inside a 58mm roll by dropping the redundant Gross column', () => {
+    // Gross is Net + VAT, both of which are in the row — the only column a reader can
+    // reconstruct, so the only one that may go when the paper cannot hold four.
+    const narrow = decode(buildReceipt(MIXED, 32));
+    expect(narrow).toContain('VAT SUMMARY');
+    expect(narrow).not.toContain('Gross');
+    expect(decode(buildReceipt(MIXED, 42))).toContain('Gross');
   });
 
   it('truncates an overlong product name instead of breaking the layout', () => {
@@ -169,6 +219,44 @@ describe('buildReceipt', () => {
 });
 
 describe('buildReceiptWithDrawerKick', () => {
+  it('prints a VAT summary when the sale mixes rates', () => {
+    const printed = decode(buildReceipt(MIXED));
+    expect(printed).toContain('VAT SUMMARY');
+    // The rate is printed even at zero: "0%" says the line was considered and found
+    // exempt, where a blank says nothing and looks identical to an omission.
+    expect(printed).toContain('0%');
+    expect(printed).toContain('18%');
+    expect(printed).toContain('686.44');
+    expect(printed).toContain('3,813.56');
+  });
+
+  it('gives the VAT summary a row per rate that adds up to the sale', () => {
+    const rows = textLines(buildReceipt(MIXED));
+    const at = rows.findIndex((l) => l.includes('VAT SUMMARY'));
+    expect(at).toBeGreaterThan(-1);
+
+    // Header, one row per rate, a rule, then the totals.
+    expect(rows[at + 1]).toContain('Rate');
+    expect(rows[at + 2]!.trimStart().startsWith('0%')).toBe(true);
+    expect(rows[at + 3]!.trimStart().startsWith('18%')).toBe(true);
+    expect(rows[at + 4]).toMatch(/^\s+-+/);
+
+    const totals = rows[at + 5]!;
+    expect(totals).toContain('4,313.56'); // net: 500.00 exempt + 3,813.56 standard
+    expect(totals).toContain('686.44'); // and the sale's tax, unchanged
+    expect(totals).toContain('5,000.00'); // gross, which is the TOTAL below
+  });
+
+  it('right-aligns the VAT table on the same edge as the total', () => {
+    // The figures are read down the column. If the table's right edge floated free of the
+    // Subtotal and TOTAL above and below it, none of them would line up.
+    const rows = textLines(buildReceipt(MIXED, 42)).filter((l) => l.length > 0);
+    const at = rows.findIndex((l) => l.includes('VAT SUMMARY'));
+    for (const row of rows.slice(at + 1, at + 6)) {
+      expect(row.length).toBe(42);
+    }
+  });
+
   it('appends the drawer pulse after the receipt, over the same buffer', () => {
     const receiptOnly = buildReceipt(BASE);
     const withDrawer = buildReceiptWithDrawerKick(BASE);

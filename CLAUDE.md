@@ -80,6 +80,10 @@ pnpm test           # CI-gated
 pnpm build
 pnpm format
 
+# End-to-end (M1-16) — drives the real Electron app, not a browser
+pnpm --filter @lumora/terminal test:e2e          # needs `pnpm db:up` + `pnpm db:seed`
+pnpm --filter @lumora/terminal test:e2e:headed   # watch it type
+
 # Databases
 pnpm db:up          # db-local :5442, db-cloud :5443, db-test :5444
 pnpm db:psql        # psql into the local one
@@ -132,6 +136,20 @@ migration — Flyway checksums them; fix forward. Full conventions in
 `services/backend/src/main/resources/db/migration/README.md`.
 
 ## Testing
+
+Three suites, and they are not interchangeable:
+
+| Command                                   | What it covers                                               |
+| ----------------------------------------- | ------------------------------------------------------------ |
+| `pnpm test`                               | Vitest — domain money math, receipt bytes, printer transport |
+| `./mvnw -B test` (in `services/backend`)  | Spring Boot against real Postgres                            |
+| `pnpm --filter @lumora/terminal test:e2e` | Playwright, driving the **real Electron window**             |
+
+The e2e suite starts the backend and a Next production build itself (reusing them if already
+running), but expects `pnpm db:up` and `pnpm db:seed` to have happened — it checks and tells you
+so rather than failing obscurely. It rings up real sales into `lumora_local` and deletes only the
+ones it created; `invoice_counters` is deliberately left advanced, because an issued invoice block
+is not reusable. It is **not** in the `pnpm test` CI gate: it needs Docker, a JVM and a display.
 
 Integration tests run against **real Postgres 16, never H2**. Correctness here rests on
 Postgres-specific behaviour — `ON CONFLICT` upserts on `client_uuid`, partial indexes on the outbox,

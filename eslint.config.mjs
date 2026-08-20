@@ -84,6 +84,23 @@ export default tseslint.config(
     },
   },
 
+  // Playwright e2e specs live under apps/ but are Node test code, not React.
+  //
+  // Two rules misfire there, both because Playwright's fixture API happens to collide with
+  // React's vocabulary. `use(...)` is how a fixture hands its value to the test; the
+  // react-hooks plugin sees a call to something named `use` — React 19's hook — outside a
+  // component and objects. And a fixture that needs no other fixtures is declared
+  // `async ({}, use) =>`, which is an empty destructuring pattern by design: it is
+  // Playwright's own documented signature, not a mistake to tidy up.
+  {
+    files: ['apps/**/e2e/**/*.ts'],
+    languageOptions: { globals: { ...globals.node } },
+    rules: {
+      'react-hooks/rules-of-hooks': 'off',
+      'no-empty-pattern': 'off',
+    },
+  },
+
   // Config files run in Node and are allowed to be CommonJS-ish.
   {
     files: ['**/*.config.{js,mjs,ts}', '**/*.cjs'],

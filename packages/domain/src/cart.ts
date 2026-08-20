@@ -1,12 +1,18 @@
 /**
- * Cart totals (M1-03), stamped with the tax in force (M1-05).
+ * Cart totals (M1-03), stamped with the tax in force (M1-05), per line (M1-18).
  *
  * ## Everything is normalised to gross first
  *
  * The first thing {@link cartTotals} does is convert each quoted unit price to its
- * tax-inclusive equivalent. After that single step there is no `INCLUSIVE` / `EXCLUSIVE`
- * branch anywhere below — tax is always *extracted*, discounts always apply to gross
- * amounts, and there is one code path instead of two.
+ * tax-inclusive equivalent, under that line's own stamp. After that single step there is no
+ * `INCLUSIVE` / `EXCLUSIVE` branch anywhere below and no per-line rate to thread through —
+ * tax is always *extracted*, discounts always apply to gross amounts, and a cart mixing an
+ * 18% line with an exempt one goes down the same single code path as any other.
+ *
+ * That is what made M1-18 small. The alternative — carrying the rate down through
+ * apportionment and the discount arithmetic — would have put a tax branch inside the part
+ * of this file that is hardest to get right, to no purpose: once a line is gross, its rate
+ * matters again only at the moment of extraction, and once more when the summary is grouped.
  *
  * That matters more than it looks. Two paths through money code means the rarely-used one
  * is the one nobody notices is wrong, and `EXCLUSIVE` is the trade-counter case that gets
@@ -29,6 +35,10 @@
  * So `lineTotalMinor` is the line **before** the order-level discount, and the order
  * discount lives only at sale level. Each line still carries its apportioned share, and
  * its tax is computed on the amount actually charged for it — see below.
+ *
+ * Since M1-18 the checksum also requires `Σ line.taxMinor == taxMinor`. With one rate that
+ * was merely true; with several it is the *definition* — there is no single rate left to
+ * recompute a sale's tax from, so the lines are the only thing that can say what it is.
  */
 
 import {
@@ -41,7 +51,13 @@ import {
   ZERO_MINOR,
   type Minor,
 } from './money';
-import { extractVatMinor, grossForMinor, type TaxStamp } from './vat';
+import {
+  extractVatMinor,
+  grossForMinor,
+  type BasisPoints,
+  type TaxMode,
+  type TaxStamp,
+} from './vat';
 
 export interface CartLineInput {
   readonly productClientUuid: string;
@@ -50,12 +66,22 @@ export interface CartLineInput {
   readonly unitPriceMinor: number;
   /** A discount on this line alone, in gross minor units. */
   readonly lineDiscountMinor?: number;
+  /**
+   * This line's own tax treatment (M1-18). Defaults to {@link CartInput.tax}.
+   *
+   * Products carry a rate each — `products.tax_mode` / `products.tax_rate_bp` — so a basket
+   * of groceries and a bottle of arrack is two rates, and so is anything zero-rated next to
+   * anything standard. Before M1-18 the whole cart took one stamp and such a basket was
+   * *refused* at the till rather than priced with the wrong rate on the exempt line.
+   */
+  readonly tax?: TaxStamp;
 }
 
 export interface CartInput {
   readonly lines: readonly CartLineInput[];
   /** A discount on the whole order, apportioned across lines. */
   readonly orderDiscountMinor?: number;
+  /** The stamp for lines that do not carry their own. */
   readonly tax: TaxStamp;
 }
 
@@ -76,6 +102,32 @@ export interface CartLineTotals {
   readonly netMinor: Minor;
   /** The VAT contained in {@link netMinor}. Sums to the sale's tax. */
   readonly taxMinor: Minor;
+  /** The treatment this line was actually priced under — its own, or the cart's default. */
+  readonly taxMode: TaxMode;
+  readonly taxRateBp: BasisPoints;
+}
+
+/**
+ * One rate's worth of a sale (M1-18).
+ *
+ * A tax invoice has to show the net amount, the tax on it and the total separately, and a
+ * sale mixing rates has to keep the taxable and non-taxable parts apart — so this is the
+ * shape the receipt's VAT summary and the console's reporting both read. One entry per
+ * distinct stamp, ordered by rate so the summary reads the same way on every receipt.
+ *
+ * Note {@link exVatMinor} is **not** {@link CartLineTotals.netMinor}. "Net" means two
+ * different things a line apart: there it is the gross actually charged after discounts,
+ * here it is the amount with the tax taken out. Hence the blunter name.
+ */
+export interface TaxBreakdownEntry {
+  readonly mode: TaxMode;
+  readonly rateBp: BasisPoints;
+  /** Charged, tax inclusive, for the lines under this stamp. Sums to the sale's total. */
+  readonly grossMinor: Minor;
+  /** {@link grossMinor} less {@link taxMinor} — the tax invoice's "net amount". */
+  readonly exVatMinor: Minor;
+  /** Sums to the sale's tax. */
+  readonly taxMinor: Minor;
 }
 
 export interface CartTotals {
@@ -85,9 +137,20 @@ export interface CartTotals {
   readonly discountMinor: Minor;
   readonly taxMinor: Minor;
   readonly totalMinor: Minor;
-  /** Stamped so a historical receipt reprints with the rate it was issued under (M1-05). */
+  /**
+   * The cart's **default** stamp — the one applied to lines that brought none of their own
+   * (M1-05). Since M1-18 it is no longer the whole story: on a mixed cart the authority is
+   * the per-line stamp, and {@link taxBreakdown} is what a receipt or a report should read.
+   * It stays because `sales.tax_mode` / `sales.tax_rate_bp` record it, and because a
+   * historical receipt must reprint with the rate it was issued under, not today's.
+   */
   readonly taxMode: TaxStamp['mode'];
   readonly taxRateBp: TaxStamp['rateBp'];
+  /**
+   * One entry per distinct stamp in the cart, ordered by rate. Empty only for an empty cart.
+   * More than one entry means the sale mixed rates.
+   */
+  readonly taxBreakdown: readonly TaxBreakdownEntry[];
 }
 
 /** The empty cart, so a component never has to special-case "nothing scanned yet". */
@@ -100,6 +163,7 @@ export function emptyCartTotals(tax: TaxStamp): CartTotals {
     totalMinor: ZERO_MINOR,
     taxMode: tax.mode,
     taxRateBp: tax.rateBp,
+    taxBreakdown: [],
   };
 }
 
@@ -112,12 +176,15 @@ export function cartTotals(input: CartInput): CartTotals {
     return emptyCartTotals(tax);
   }
 
-  // Pass one: normalise to gross and apply line-level discounts.
+  // Pass one: normalise to gross and apply line-level discounts. Each line grosses up under
+  // its *own* stamp, which is the whole of M1-18 — after this step the mixed cart is a list
+  // of gross amounts like any other, and everything below is rate-agnostic again.
   const base = input.lines.map((line, index) => {
     if (!Number.isInteger(line.qty) || line.qty < 1) {
       throw new RangeError(`Line ${index + 1}: qty must be a whole number of at least 1`);
     }
-    const unitPriceMinor = grossForMinor(line.unitPriceMinor, tax);
+    const stamp = line.tax ?? tax;
+    const unitPriceMinor = grossForMinor(line.unitPriceMinor, stamp);
     const gross = multiplyMinor(unitPriceMinor, line.qty);
     const lineDiscount = nonNegativeMinor(line.lineDiscountMinor ?? 0, 'lineDiscountMinor');
     if (lineDiscount > gross) {
@@ -125,7 +192,13 @@ export function cartTotals(input: CartInput): CartTotals {
         `Line ${index + 1}: discount ${lineDiscount} exceeds the line total ${gross}`,
       );
     }
-    return { line, unitPriceMinor, lineDiscount, lineTotal: subtractMinor(gross, lineDiscount) };
+    return {
+      line,
+      stamp,
+      unitPriceMinor,
+      lineDiscount,
+      lineTotal: subtractMinor(gross, lineDiscount),
+    };
   });
 
   const subtotalMinor = sumMinor(base.map((b) => b.lineTotal));
@@ -153,7 +226,9 @@ export function cartTotals(input: CartInput): CartTotals {
       orderDiscountShareMinor: share,
       netMinor,
       // Always extraction: everything above is gross by now, whatever the sale was quoted in.
-      taxMinor: extractVatMinor(netMinor, tax.rateBp),
+      taxMinor: extractVatMinor(netMinor, b.stamp.rateBp),
+      taxMode: b.stamp.mode,
+      taxRateBp: b.stamp.rateBp,
     };
   });
 
@@ -167,7 +242,53 @@ export function cartTotals(input: CartInput): CartTotals {
     totalMinor: subtractMinor(subtotalMinor, discountMinor),
     taxMode: tax.mode,
     taxRateBp: tax.rateBp,
+    taxBreakdown: breakdown(lines),
   };
+}
+
+/**
+ * Groups the priced lines by the stamp each was charged under (M1-18).
+ *
+ * Summed from the lines rather than recomputed from the group's gross, which matters
+ * because extraction truncates: extracting once from a 126,000 group is not always what
+ * extracting from a 90,000 line and a 36,000 line comes to, and the two differ by a cent
+ * often enough to matter. The lines are what the customer was charged, so the lines are
+ * what the summary adds up — that is also why `Σ entry.taxMinor` is exactly the sale's tax
+ * and the receipt's foot agrees with its own summary block.
+ */
+function breakdown(lines: readonly CartLineTotals[]): TaxBreakdownEntry[] {
+  const groups = new Map<
+    string,
+    { mode: TaxMode; rateBp: BasisPoints; gross: number; tax: number }
+  >();
+
+  for (const line of lines) {
+    const key = `${line.taxMode}:${line.taxRateBp}`;
+    const group = groups.get(key) ?? {
+      mode: line.taxMode,
+      rateBp: line.taxRateBp,
+      gross: 0,
+      tax: 0,
+    };
+    group.gross += line.netMinor;
+    group.tax += line.taxMinor;
+    groups.set(key, group);
+  }
+
+  return (
+    [...groups.values()]
+      // By rate, so anything exempt or zero-rated leads and the summary reads the same on
+      // every receipt. Mode breaks the tie only so the order is total rather than merely
+      // consistent-by-luck; a cart mixing modes at one rate is pathological but not illegal.
+      .sort((a, b) => a.rateBp - b.rateBp || a.mode.localeCompare(b.mode))
+      .map((group) => ({
+        mode: group.mode,
+        rateBp: group.rateBp,
+        grossMinor: minor(group.gross),
+        exVatMinor: subtractMinor(minor(group.gross), minor(group.tax)),
+        taxMinor: minor(group.tax),
+      }))
+  );
 }
 
 /**

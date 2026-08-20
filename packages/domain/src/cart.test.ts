@@ -15,9 +15,26 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import { cartTotals, emptyCartTotals, type CartLineInput } from './cart';
-import { taxStamp, type TaxMode } from './vat';
+import { taxStamp, type TaxMode, type TaxStamp } from './vat';
 
 const STAMP = taxStamp('INCLUSIVE', 1800);
+
+/**
+ * Sometimes absent, so the same generated cart exercises both the M1-18 per-line stamp and
+ * the M1-05 fall-back to the cart's own — a cart where *every* line overrode would never
+ * test the default, and every property below has to hold either way.
+ */
+const stampArb: fc.Arbitrary<TaxStamp | undefined> = fc.option(
+  fc
+    .record({
+      mode: fc.constantFrom<TaxMode>('INCLUSIVE', 'EXCLUSIVE'),
+      // 0 is exempt/zero-rated, and mixing it with a standard rate is the exact basket
+      // M1-18 exists for: a loaf of bread and a bottle of arrack.
+      rateBp: fc.constantFrom(0, 800, 1500, 1800, 2500),
+    })
+    .map(({ mode, rateBp }) => taxStamp(mode, rateBp)),
+  { nil: undefined },
+);
 
 const lineArb: fc.Arbitrary<CartLineInput> = fc
   .record({
@@ -25,13 +42,15 @@ const lineArb: fc.Arbitrary<CartLineInput> = fc
     qty: fc.integer({ min: 1, max: 20 }),
     unitPriceMinor: fc.integer({ min: 0, max: 1_000_000 }),
     lineDiscountPermille: fc.integer({ min: 0, max: 1000 }),
+    tax: stampArb,
   })
-  .map(({ productClientUuid, qty, unitPriceMinor, lineDiscountPermille }) => ({
+  .map(({ productClientUuid, qty, unitPriceMinor, lineDiscountPermille, tax }) => ({
     productClientUuid,
     qty,
     unitPriceMinor,
     // Expressed as a fraction of the line so it can never exceed it.
     lineDiscountMinor: Math.floor((unitPriceMinor * qty * lineDiscountPermille) / 1000),
+    ...(tax ? { tax } : {}),
   }));
 
 interface CartSpec {
@@ -165,6 +184,156 @@ describe('cart totals — internal reconciliation', () => {
         expect(totals.taxRateBp).toBe(spec.rateBp);
       }),
     );
+  });
+});
+
+describe('tax breakdown — mixed rates in one cart (M1-18)', () => {
+  it('the breakdown gross adds up to the total the customer paid', () => {
+    fc.assert(
+      fc.property(cartArb, (spec) => {
+        const totals = build(spec);
+        const gross = totals.taxBreakdown.reduce((sum, e) => sum + e.grossMinor, 0);
+        expect(gross).toBe(totals.totalMinor);
+      }),
+    );
+  });
+
+  it('the breakdown tax adds up to the tax printed at the foot', () => {
+    fc.assert(
+      fc.property(cartArb, (spec) => {
+        const totals = build(spec);
+        const tax = totals.taxBreakdown.reduce((sum, e) => sum + e.taxMinor, 0);
+        expect(tax).toBe(totals.taxMinor);
+      }),
+    );
+  });
+
+  it('every entry reconciles: net plus tax is gross', () => {
+    fc.assert(
+      fc.property(cartArb, (spec) => {
+        for (const entry of build(spec).taxBreakdown) {
+          // The one identity a tax invoice actually asserts, and the reason exVatMinor is
+          // derived here rather than re-extracted from the group.
+          expect(entry.exVatMinor + entry.taxMinor).toBe(entry.grossMinor);
+          expect(entry.exVatMinor).toBeGreaterThanOrEqual(0);
+        }
+      }),
+    );
+  });
+
+  it('holds exactly one entry per distinct stamp, ordered by rate', () => {
+    fc.assert(
+      fc.property(cartArb, (spec) => {
+        const totals = build(spec);
+        const keys = totals.taxBreakdown.map((e) => `${e.mode}:${e.rateBp}`);
+        expect(new Set(keys).size).toBe(keys.length);
+
+        const distinct = new Set(totals.lines.map((l) => `${l.taxMode}:${l.taxRateBp}`));
+        expect(new Set(keys)).toEqual(distinct);
+
+        const rates = totals.taxBreakdown.map((e) => e.rateBp);
+        expect(rates).toEqual([...rates].sort((a, b) => a - b));
+      }),
+    );
+  });
+
+  it('prices each line at its own rate, never the first line rate', () => {
+    // The bug M1-18 was raised for. Bread is exempt, arrack is 18%; before this, the cart
+    // took one stamp and either refused outright or would have charged VAT on the bread.
+    const totals = cartTotals({
+      lines: [
+        {
+          productClientUuid: 'bread',
+          qty: 2,
+          unitPriceMinor: 25000,
+          tax: taxStamp('INCLUSIVE', 0),
+        },
+        {
+          productClientUuid: 'arrack',
+          qty: 1,
+          unitPriceMinor: 450000,
+          tax: taxStamp('INCLUSIVE', 1800),
+        },
+      ],
+      tax: taxStamp('INCLUSIVE', 1800),
+    });
+
+    expect(totals.lines[0]!.taxMinor).toBe(0);
+    // 4500.00 inclusive at 18% -> 4500.00 x 1800 / 11800.
+    expect(totals.lines[1]!.taxMinor).toBe(Math.floor((450000 * 1800) / 11800));
+    expect(totals.totalMinor).toBe(500000);
+    expect(totals.taxMinor).toBe(68644);
+
+    expect(totals.taxBreakdown).toEqual([
+      { mode: 'INCLUSIVE', rateBp: 0, grossMinor: 50000, exVatMinor: 50000, taxMinor: 0 },
+      {
+        mode: 'INCLUSIVE',
+        rateBp: 1800,
+        grossMinor: 450000,
+        exVatMinor: 450000 - 68644,
+        taxMinor: 68644,
+      },
+    ]);
+  });
+
+  it('falls back to the cart stamp for a line that carries none', () => {
+    const totals = cartTotals({
+      lines: [
+        { productClientUuid: 'a', qty: 1, unitPriceMinor: 45000 },
+        { productClientUuid: 'b', qty: 1, unitPriceMinor: 45000, tax: taxStamp('INCLUSIVE', 0) },
+      ],
+      tax: taxStamp('INCLUSIVE', 1800),
+    });
+
+    expect(totals.lines[0]!.taxRateBp).toBe(1800);
+    expect(totals.lines[1]!.taxRateBp).toBe(0);
+    // The sale still records the cart's default, which is what `sales.tax_rate_bp` holds.
+    expect(totals.taxRateBp).toBe(1800);
+    expect(totals.taxBreakdown).toHaveLength(2);
+  });
+
+  it('groups a single-rate cart into exactly one entry', () => {
+    const totals = cartTotals({
+      lines: [
+        { productClientUuid: 'a', qty: 1, unitPriceMinor: 45000 },
+        { productClientUuid: 'b', qty: 3, unitPriceMinor: 12000 },
+      ],
+      tax: taxStamp('INCLUSIVE', 1800),
+    });
+
+    expect(totals.taxBreakdown).toHaveLength(1);
+    expect(totals.taxBreakdown[0]!.grossMinor).toBe(totals.totalMinor);
+    expect(totals.taxBreakdown[0]!.taxMinor).toBe(totals.taxMinor);
+  });
+
+  it('apportions an order discount across rates, and the summary still reconciles', () => {
+    // The nasty one: a whole-order discount reduces an exempt line and a taxed line alike,
+    // and the tax on the taxed line has to fall with it. Largest-remainder apportionment
+    // plus per-line extraction is what keeps the parts summing to the whole here.
+    const totals = cartTotals({
+      lines: [
+        {
+          productClientUuid: 'bread',
+          qty: 1,
+          unitPriceMinor: 33333,
+          tax: taxStamp('INCLUSIVE', 0),
+        },
+        { productClientUuid: 'tea', qty: 1, unitPriceMinor: 33333 },
+        { productClientUuid: 'soap', qty: 1, unitPriceMinor: 33334 },
+      ],
+      orderDiscountMinor: 10000,
+      tax: taxStamp('INCLUSIVE', 1800),
+    });
+
+    expect(totals.totalMinor).toBe(90000);
+    expect(totals.taxBreakdown.reduce((sum, e) => sum + e.grossMinor, 0)).toBe(totals.totalMinor);
+    expect(totals.taxBreakdown.reduce((sum, e) => sum + e.taxMinor, 0)).toBe(totals.taxMinor);
+    expect(totals.taxBreakdown[0]!.taxMinor).toBe(0);
+  });
+
+  it('gives an empty cart no breakdown at all', () => {
+    // Not one zeroed entry: nothing was sold, so there is no rate to report.
+    expect(emptyCartTotals(STAMP).taxBreakdown).toEqual([]);
   });
 });
 

@@ -1,6 +1,6 @@
 # Lumora POS — Build Roadmap
 
-> **Current position:** **M1 in progress — 15 of 18 done.** The money layer (`M1-01`–`M1-05`, 53 domain tests), the catalogue (`M1-06`, `V103`, 53 backend tests), the keyboard-only appliance (`M1-07`–`M1-10`), the tender overlay (`M1-11`, `V104`/`V201`), per-terminal invoice blocks (`M1-12`, `V105`) and the ESC/POS receipt + drawer kick (`M1-13`/`M1-14`) are in — domain suite at 67 tests, terminal suite at 33 tests (new), backend suite at 63. Gate M0 passed 2026-08-12. `D3` and `D6` settled; cash rounding signed off. **Next: `M1-15` (stock movement guard — largely already true, needs a dedicated test), `M1-16` (Playwright spec), `M1-18` (per-line tax rates).** Two verification gaps carried forward, both in §G: `M1-11`'s overlay needs a human keyboard-only pass in the running Electron window, and `M1-14`'s serial transport now has its MSVC/`electron-rebuild` toolchain confirmed working (loads under real Electron, enumerates real COM ports) but is still unverified against an actual printer — none is attached here. TCP remains the transport actually proven end to end.
+> **Current position:** **M1 complete — 18 of 18 done. Gate M1 is the only thing left in the milestone, and it needs a person.** The money layer (`M1-01`–`M1-05`), the catalogue (`M1-06`), the keyboard-only appliance (`M1-07`–`M1-10`), the tender overlay (`M1-11`), per-terminal invoice blocks (`M1-12`), the ESC/POS receipt + drawer kick (`M1-13`/`M1-14`), stock movements reaching the cloud (`M1-15`), per-line tax rates (`M1-18`, `V106`/`V202`) and the Playwright keyboard-only spec (`M1-16`) are all in — domain 76 tests, terminal 39, backend 77, plus 6 end-to-end specs driving the **real Electron window**. Gate M0 passed 2026-08-12. `D3` and `D6` settled; cash rounding signed off. **Next: attempt Gate M1** — 20 consecutive sales, by a human, without a mouse; `pnpm --filter @lumora/terminal test:e2e` now holds the mechanical half of that so the attempt is about the things only a person notices. Then M2. Two verification gaps remain, both in §G: `M1-11`'s tender overlay still wants a human keyboard-only pass (Gate M1 will supply it), and `M1-14`'s serial transport is toolchain-confirmed but has never written to a physical printer — none is attached here; TCP is the only transport proven end to end, and the e2e suite now exercises it against a fake printer on every run. **`§D` is stale in a way that matters: the IRD invoice-format mandate has already come into force — see the 2026-08-20 rows in §G.**
 
 **Source of truth for design:** [Building Lumora POS — Development Guide](https://claude.ai/code/artifact/c2c24386-6677-440a-a989-cf4d83ff8ff8). This roadmap is the _execution_ document; the guide is the _design_ document. When they conflict, the guide wins on design and this file wins on sequencing. Revise both when decisions change rather than letting the code drift.
 
@@ -168,10 +168,10 @@ The terminal screen, for real, against the local backend.
 - [x] **M1-12** Per-terminal invoice numbering — locally issued blocks, `KND-T2-001047` = branch · terminal · local sequence within this terminal's reserved range <sub>done 2026-08-17 — see §G</sub>
 - [x] **M1-13** ESC/POS receipt renderer <sub>done 2026-08-17 — see §G</sub>
 - [x] **M1-14** Electron main-process serial/USB write + drawer kick via IPC — **no QZ Tray** (this removes the unsigned-certificate problem entirely) <sub>done 2026-08-17 — TCP transport verified live; serial toolchain confirmed (loads under Electron, real COM ports enumerated) but no physical printer to write to, see §G</sub>
-- [ ] **M1-15** `SALE` stock movement written inside the sale transaction
-- [ ] **M1-16** Playwright keyboard-only spec — completes a full sale and asserts no `click` event is dispatched
+- [x] **M1-15** `SALE` stock movement written inside the sale transaction <sub>done 2026-08-18 — the local write already existed; what was missing was the movement ever reaching the cloud, see §G</sub>
+- [x] **M1-16** Playwright keyboard-only spec — completes a full sale and asserts no `click` event is dispatched <sub>done 2026-08-20 — 6 specs against the real Electron window, not a Chromium page; `pnpm --filter @lumora/terminal test:e2e`; see §G</sub>
 - [x] **M1-17** Resolve open decision **D3** (brand palette beyond the terminal's darkened accent) <sub>done 2026-08-13</sub>
-- [ ] **M1-18** **Per-line tax rates.** `cartTotals` takes one `TaxStamp` for the whole cart, and `sales` stores one `tax_mode`/`tax_rate_bp`. A cart mixing an 18% line with an exempt one would price the exempt line at 18%. The till currently **refuses** such a cart rather than selling it quietly wrong; lifting this needs a per-line stamp in the domain and a schema change. Found building M1-07.
+- [x] **M1-18** **Per-line tax rates.** `cartTotals` took one `TaxStamp` for the whole cart, and `sales` stored one `tax_mode`/`tax_rate_bp`. A cart mixing an 18% line with an exempt one would have priced the exempt line at 18%. The till **refused** such a cart rather than selling it quietly wrong; lifting it needed a per-line stamp in the domain and a schema change. Found building M1-07. <sub>done 2026-08-20 — `V106`/`V202`, and the sale-tax checksum tightened to `Σ line.taxMinor`; see §G</sub>
 
 > **⛔ Gate M1** — A cashier completes **20 consecutive sales without touching a mouse**.
 >
@@ -275,15 +275,17 @@ Sri Lanka is mid-transition from self-kept records to government-linked fiscal i
 
 These dates are external, so this track runs in parallel with §C rather than as a milestone.
 
-| Requirement                                                 | Timing         | What it means for the build                                                                                                                                  | Lands in |
-| ----------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
-| Updated IRD tax-invoice format                              | **April 2026** | Invoice layout and required fields must match the IRD specification                                                                                          | M5-09    |
-| VAT registration threshold falls to Rs. 36M                 | 2026           | Many more small retailers become VAT-registered and must re-tool — market event, no build                                                                    | —        |
-| E-invoicing rollout, ending with B2C via POS                | phased         | Transaction data submitted to RAMIS via a Web API. Cloud-side only: the shop queues, the cloud submits, status flows back. One integration, one certificate. | v4       |
-| "Secured POS machines" approved by the Commissioner-General | proposed s.64B | Certification will be required to sell to VAT-registered businesses                                                                                          | v4       |
-| PDPA No. 9 of 2022                                          | phasing in     | Customer data export and erasure; breach notification; penalties to Rs. 10M per instance                                                                     | M5-10    |
+| Requirement                                                 | Timing                             | What it means for the build                                                                                                                                                       | Lands in |
+| ----------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| Updated IRD tax-invoice format                              | **1 July 2026 - already in force** | Gazette **2481/22** (27 Mar 2026) replaced the Nov 2025 spec and moved the date from 1 April to 1 July 2026. Both are now past. Invoice layout and required fields must match it. | M5-09    |
+| VAT registration threshold falls to Rs. 36M                 | 2026                               | Many more small retailers become VAT-registered and must re-tool — market event, no build                                                                                         | —        |
+| E-invoicing rollout, ending with B2C via POS                | phased                             | Transaction data submitted to RAMIS via a Web API. Cloud-side only: the shop queues, the cloud submits, status flows back. One integration, one certificate.                      | v4       |
+| "Secured POS machines" approved by the Commissioner-General | proposed s.64B                     | Certification will be required to sell to VAT-registered businesses                                                                                                               | v4       |
+| PDPA No. 9 of 2022                                          | phasing in                         | Customer data export and erasure; breach notification; penalties to Rs. 10M per instance                                                                                          | M5-10    |
 
 Two things must land before the mandate bites: **IRD invoice-format compliance** and **per-customer data export and erasure**. Neither is large; both are time-boxed by external dates.
+
+> **The invoice-format date has passed.** Checked 2026-08-20 while shaping M1-18's receipt block: the April 2026 deadline this table carried came from Gazette 2463/05 (17 Nov 2025), which Gazette **2481/22** (27 Mar 2026) rescinded, moving the mandate to **1 July 2026** and changing the specification itself. M5-09 is therefore no longer work against a future deadline — it is late, and it should be re-read against 2481/22 rather than against whatever was known when this row was written. M1-18 put the per-rate net/VAT/gross separation the format requires onto the receipt already (§G), but nobody has checked the rest of the field list — TIN, the serial-number format, the invoice-date/supply-date split — against the actual gazette text. Sources are secondary reporting, not the gazette; **read the gazette before treating any of this as settled.**
 
 ---
 
@@ -367,6 +369,179 @@ Append-only. One row per gate attempt (pass or fail) and per significant course 
 | 2026-08-17 | M1-14     | —           | Printer transport. Found before writing hardware code: no MSVC toolchain here to build `serialport` from source, no physical printer either way — asked how to proceed rather than guessing; chose a `PrinterTransport` interface with **TCP (RAW/JetDirect, port 9100) as the default and the one this environment can prove**, `serialport` wired in behind the same interface as an `optionalDependency`, lazily required, left unverified. `main.cjs` gained `ipcMain.handle('printer:print', ...)`, `preload.cjs` a `window.lumora.printer.print(bytes)` bridge — both CommonJS, tested directly instead of adding a TypeScript build step for Electron main (see the write-up below for why the old comment expecting that step is now stale on purpose). 11 new transport tests, one a real `net.createServer` round trip. **Then verified live:** launched the real Electron app (`ELECTRON_RUN_AS_NODE` had to be cleared — it was set in this shell and silently downgrades Electron to a plain Node process with no `ipcMain`, a trap worth knowing about), drove `window.lumora.printer.print()` directly over CDP against a fake TCP printer, and the exact bytes (`ESC @ "PING\n" GS V 1`) arrived. **Not verified:** `SerialPrinterTransport` against real hardware, and a full click-through "sale completes → receipt prints" pass through the cashier UI — this session verified the IPC/transport pipeline directly, not via keystrokes. |
 | 2026-08-17 | M1-14     | —           | Closed the serial-transport ABI gap flagged above. Installed Visual Studio Build Tools 2022 ("Desktop development with C++" workload) via winget, added `@electron/rebuild` and a `pnpm --filter @lumora/terminal rebuild:serial` script. Ran it — clean rebuild — then loaded `serialport` inside a **real Electron 33 main process** (`app.whenReady()`, not `next -e`) and called `SerialPort.list()`: it returned this machine's actual COM ports (`COM1`, plus two Bluetooth serial ports), with no `NODE_MODULE_VERSION` mismatch. That is real confirmation the native binding now matches Electron's ABI. **Still not verified:** writing bytes to an attached receipt printer — there is not one on this machine. `serialport` moved from "wired, unverified toolchain" to "wired, toolchain confirmed, only real hardware missing."                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 2026-08-17 | M1-14     | —           | **Real bug, found by the user running `pnpm --filter @lumora/terminal electron` for the first time**, not by this session's own testing: the app failed to load at all — `TcpPrinterTransport requires a host`. `main.cjs` built the printer transport once, eagerly, at module load, and `TcpPrinterTransport`'s constructor threw when no `LUMORA_PRINTER_HOST` was set (the ordinary case for a fresh machine). The throw was never caught, so it took the whole app down before a window ever opened — directly contradicting the principle this milestone was built around, that printing must never be able to affect anything but printing. Fixed two ways: `printerConfigFromEnv` now defaults `host` to `127.0.0.1` rather than leaving it unset, and, more importantly, transport construction in `main.cjs` is now wrapped in try/catch — any future misconfiguration degrades to "printing disabled, logged once" rather than an app that will not start. Reproduced the exact failure and the fix against a real launch: with no printer env vars set at all, the app now opens normally, and a print attempt returns a clean `{ok:false, error:"...ECONNREFUSED..."}` instead of anything crashing.                                                                                                                                                                                                                                           |
+| 2026-08-18 | M1-15     | —           | **The task was not the one the roadmap described.** "Largely already true, needs a dedicated test" was right about the shop PC and wrong about everything past it: `SaleService` had always written a `SALE` movement inside the sale transaction, but the outbox payload carried no movements, `SyncIngestService` never looked for any, and the cloud's `stock_movements` table — created back in `V200`, with a unique index on `client_uuid` — had never received a single row. Ground rule #2 was half-built and looked finished. Fixed by hoisting the movement's `client_uuid` out of the insert and into the payload, so the key the cloud upserts on is the key the till wrote, and adding `ingestMovements` with `ON CONFLICT (client_uuid) DO NOTHING`. Backend suite 63 → 69. **Verified against both running backends and the real `lumora_local`/`lumora_cloud`, not just the test database:** a two-line sale over HTTP (`KND-TM115-000001`) wrote two movements whose uuids matched the outbox payload exactly, both crossed to the cloud on the next drain, and then the outbox row was un-acked to force a genuine redelivery — the cloud re-accepted the batch and stock on hand stayed at `-2`/`-2`, with 2 movement rows, not 4. Smoke rows deleted from both databases afterward.                                                                                                                                                     |
+
+| 2026-08-20 | M1-18 | — | **Per-line tax rates.** The stamp moved from the cart to the line: `CartLineInput.tax` (falling back to the cart's), a `taxBreakdown` on `CartTotals` grouping net/VAT/gross by rate, `V106`/`V202` adding `tax_mode`/`tax_rate_bp` to `sale_items` on both tiers, and a VAT summary block on the receipt. Domain 67 → 76, terminal 33 → 39, backend 69 → 77. The till no longer refuses a mixed basket. **Verified against both running backends and the real `lumora_local`/`lumora_cloud`:** a bread-at-0% + tea-at-18% sale over HTTP (`KND-TM118-000001`) stored each line under its own rate, `GROUP BY tax_rate_bp` returned the per-rate summary a tax invoice needs, both rates crossed to the cloud, a forced redelivery left 1 sale and 2 items unchanged, a pre-M1-18 payload with no per-line stamp still inherited the sale's, and a mixed cart taxed as though it were all 18% was rejected `422` with nothing written. Smoke rows deleted from both databases afterwards. **Not verified:** the mixed cart driven through the UI by keystrokes — this session proved the money path and the wire, not the screen. |
+| 2026-08-20 | M1-18 | — | **Two things were wrong before this task started, both found by doing it.** (1) The backend never checked that the line taxes summed to the sale's tax, and a test fixture had been quietly exploiting that — `twoLineRequest` extracted VAT from the subtotal (19,220) where the domain sums the lines (19,219). One cent, in a fixture asserting the backend agreed with a terminal it disagreed with. (2) `§D`'s IRD deadline was stale: April 2026 became 1 July 2026 under a different gazette, and both dates are now past. See the note added to §D. |
+
+| 2026-08-20 | M1-16 | — | **The keyboard-only spec, against the real Electron window.** Playwright added to `apps/terminal` (`e2e/`, `playwright.config.ts`, `pnpm test:e2e`), launching the actual app through the Electron API rather than pointing Chromium at the dev server — the same reason this project refused H2 and Testcontainers, and the reason the one M1-14 bug that reached a user (`main.cjs` throwing before a window opened) was invisible to anything but the real shell. Six specs: a keyboard-only sale asserted down to the `sales` row and its outbox row; three consecutive sales proving the cart clears, focus returns and invoice numbers advance; a mixed-rate basket; both halves of the M1-09 scanner rule; and one that clicks the mouse on purpose and requires the pointer detector to notice, so the other five asserting "no pointer events" cannot pass vacuously if the recorder ever stops being installed. The suite starts the backend and a Next production build itself, seeds nothing but checks the seed and fails with the command that fixes it, and deletes only the sales it created (a watermark taken before the run) so a developer's own rows survive. `invoice_counters` is deliberately **not** rewound — a terminal's issued block is not reusable, which is the whole of M1-12. |
+| 2026-08-20 | M1-16 | — | **The assertion is not "the test never clicked".** Every pointer-shaped event (`pointerdown`/`mousedown`/`click`/`dblclick`/`contextmenu`, capture phase, on `window`) is recorded and each spec asserts the list is empty — a statement about the app, where "we didn't call `page.click()`" would only be a statement about the test. Worth knowing for whoever changes this: a `<button>` activated by Enter fires a synthetic `click` with `detail === 0`, so if the till ever gains a focused-button control the assertion to keep is `detail === 0`, which is the actual line between "activated from the keyboard" and "a hand left the keyboard". The suite also runs against a fake TCP printer, so the receipt is now asserted from a sale the UI really rang up rather than from a hand-built fixture — which closes M1-18's outstanding "not driven through the UI" gap. |
+| 2026-08-20 | M1-16 | — | **Two false starts worth recording, because both cost real time and neither was the app's fault.** (1) A spec that failed cold and passed warm: `next dev` compiles on demand, so the first run raced a webpack build later runs did not — disqualifying for a suite whose subject is keystroke timing. Now a production build. Note `next start` does **not** serve the `output: 'standalone'` artefact the installer will ship; doing that properly needs M5-01's packaging step and is left there rather than reimplemented in a test config. (2) A locator, not a race: `getByText(name).first()` matched several nested elements inside a cart cell that also carries the SKU, and picked whichever the DOM ordered first — failing while the cart was plainly on screen. Scoped to `getByRole('row')`. **A wrong turn mid-way is also recorded here on purpose:** the intermittent failures were first blamed on a focus race (the scan field is disabled during tendering, so focus drops to `<body>` and a passive `useEffect` restores it only after paint) and `ScanField` was changed to a layout effect. A MutationObserver on the `disabled` attribute then showed focus was _already_ back before the attribute change was even observable — no such window exists — so the change was reverted rather than kept as a plausible-sounding fix for a bug that was never demonstrated. |
+
+### M1-16 — proving the mouse is optional
+
+**Electron, not Chromium.** The spec launches the real application. The alternative — a browser
+page against the dev server — tests the renderer and nothing else, and the till is not a
+renderer: it is a main process that owns the printer, a preload bridge, a single-instance lock
+and a window that has already failed to open once in this project's history. Gate M1 is
+executed against that window, and a spec proving the keyboard path somewhere else proves it
+about somewhere else. This is the same judgement as Postgres-over-H2 and compose-over-
+Testcontainers, applied one layer up.
+
+**What the suite is for.** It cannot tick Gate M1 and does not try to. The gate is twenty
+consecutive sales _by a person_, and a person is what finds the things a script structurally
+cannot — that a key is under the wrong finger, that the eye has to hunt for the total, that
+the overlay feels like it stole focus even where the DOM says it did not. What the suite holds
+is the mechanical half: that the whole sale path is reachable with keystrokes alone, and that
+none of it quietly starts requiring a pointer. That makes the gate cheap to attempt and hard
+to regress, which is the useful division of labour between a test and a human.
+
+**Recording pointer events rather than avoiding clicks.** The obvious implementation — never
+call `page.click()` and declare victory — asserts something about the test, not the product.
+Instead every pointer-shaped event is captured on `window` in the capture phase (so nothing
+the app does with `stopPropagation` can hide it) and each spec ends by asserting the list is
+empty. The regression this actually catches is someone adding a control that only a mouse can
+reach, and the keyboard path silently ceasing to cover the whole sale.
+
+One subtlety for whoever touches this next: a focused `<button>` activated with Enter _does_
+fire a `click`, with `detail === 0`. Zero-of-any-kind is currently true because the till drives
+everything through document-level key handlers, and it is the stricter assertion, so it stays.
+If a focused-button control ever arrives deliberately, the assertion worth keeping is
+`detail === 0` — that is the real boundary between a keyboard activation and a hand leaving the
+keyboard.
+
+**One spec exists to keep the other five honest.** Every keyboard spec ends by asserting the
+recorded pointer events are empty — an assertion whose failure mode is silence. If the recorder
+ever stopped being installed, they would all keep passing while proving nothing, and a
+mouse-only control could walk straight in. So one spec clicks a button with the mouse and
+requires the detector to notice. (It clicks the theme toggle, the only button on the screen
+that is never disabled: a disabled button dispatches no click, which would have made the guard
+exactly as vacuous as the thing it guards against — found by writing it against F12 first.)
+
+**The receipt is now asserted from a sale that was rung up.** The suite runs a fake TCP printer
+on an ephemeral port and points the app at it, so `buildReceipt` is exercised from real cart
+totals rather than a fixture. That is what closes the gap M1-18 left open: the mixed-rate
+basket now goes in through the scan field, out through the VAT summary block on the paper, and
+is checked per line in the database on the way past.
+
+**It writes to `lumora_local`, and cleans up after itself.** There is no separate e2e database,
+because inventing one would mean the suite no longer exercised the database the app runs
+against. So the run records `max(sales.id)` before it starts and deletes only above that line;
+anything a developer rang up by hand is outside the range and survives. `invoice_counters` is
+left advanced on purpose — a terminal's issued block is not reusable, and a suite that rewound
+it would be rehearsing the exact thing per-terminal numbering exists to prevent.
+
+**Two false starts, and one wrong turn that is worth more than the fix.** The suite was
+intermittently red, and the first hypothesis was a real-sounding focus race: the scan field is
+disabled while the tender overlay is up, disabling an input drops focus to `<body>`, and a
+passive `useEffect` restores it only after paint — so a gun firing a character every 10ms into
+that window would clip its leading digits, and the till would report "No product for barcode
+791234567890", which reads as a bad barcode rather than a lost keystroke. Plausible, matched
+the symptom, and `ScanField` was duly changed to a layout effect.
+
+It was wrong. A MutationObserver on the input's `disabled` attribute — which fires as a
+microtask, strictly before a passive effect would run — showed focus was already back on the
+field at that point. There is no enabled-but-unfocused window. The change was reverted rather
+than kept: a fix that cannot be shown to fix anything, carrying a comment that says it does, is
+worse than no change at all, because the next person reads the comment as evidence.
+
+The actual causes were both in the test. `next dev` compiles routes on demand, so the first run
+of a suite raced a webpack build that later runs did not — a suite about keystroke timing
+cannot be built on that, so it now runs a production build. And `getByText(name).first()`
+matched several nested elements inside a cart cell that also carries the SKU, taking whichever
+the DOM ordered first; it failed while the cart was plainly on screen in the failure snapshot.
+Scoped to `getByRole('row')`, six consecutive full-suite runs are green.
+
+### M1-18 — one rate per basket was never true
+
+**The bug was visible from M1-07 and shipped anyway, correctly.** The till refused a cart
+mixing an exempt line with a standard-rated one rather than pricing the exempt line at 18%.
+That was the right call at the time and it is worth being explicit about why: refusing a
+sale is a bad day for one shopkeeper, and quietly overcharging VAT on bread is a bad year
+for the business. But "refuses" is not "works", and a grocer cannot sell bread and arrack on
+one docket — which is most of what a Sri Lankan corner shop does all day.
+
+**What made it small was where the tax lives.** `cartTotals` normalises every line to gross
+in its first pass and never branches on tax mode again; after that step a cart is a list of
+gross amounts and rate matters only at the moment of extraction. So the change was to gross
+each line up under _its own_ stamp rather than the cart's — one line of the existing pass —
+and everything downstream, apportionment included, was already rate-agnostic. The
+alternative shape, threading a rate through the discount arithmetic, would have put a tax
+branch inside the part of that file that is hardest to get right.
+
+**The sale-level stamp did not go away, and should not.** `sales.tax_mode` / `tax_rate_bp`
+now mean the cart's **default** — what a line inherits when it carries none. That is not a
+summary of the lines and must not be read as one: on a mixed basket it is simply the first
+product's rate. The authority is `sale_items`, and the per-rate figures a tax invoice needs
+are a `GROUP BY` over them. Keeping the column meant no nullable widening, no reader
+handling a null that never occurs, and M1-05's guarantee that a historical receipt reprints
+under the rate it was issued with is untouched.
+
+**`Σ line.taxMinor == taxMinor` went from true to load-bearing.** With one rate, a sale's
+tax could be recomputed from the total; with several there is no single rate to recompute it
+from, and the lines are the only thing that can say what the tax was. The backend now checks
+it. That check immediately caught a test fixture that had been extracting VAT from the
+subtotal instead of summing the lines — 19,220 against 19,219 — meaning a fixture asserting
+the backend agreed with the terminal had disagreed with it by a cent since M1-15, and
+nothing failed. Extraction truncates; extracting once from a group is not extracting from
+each of its parts. That is also why `taxBreakdown` sums the lines rather than re-extracting
+from each group's gross.
+
+**The receipt gained a net line it should have had all along.** A tax invoice has to state
+the amount excluding tax, the tax, and the total as three separate figures. The receipt
+printed the VAT and the total and left the net to be inferred by subtraction — and under an
+inclusive regime the net appears on no other document, so if the receipt does not say it,
+nothing does. Single-rate sales now print `Net (excl. VAT)`; mixed sales print a `VAT
+SUMMARY` table, one row per rate, with a totals row. On a 58mm roll the **Gross** column is
+dropped rather than wrapped: it is Net + VAT, both already in the row, so it is the only
+column a reader can reconstruct. The rate is printed even when it is zero — "0%" says the
+line was considered and found exempt, where a blank is an omission and the two look
+identical afterwards.
+
+**Backward compatibility is deliberate, and is not only about history.** A line may send no
+stamp at all, and inherits the sale's. Before M1-18 a cart could hold only one rate, so the
+sale's stamp is not a fallback for such a payload — it is precisely what that till meant.
+The same reasoning as M1-15's movements: a shop's backlog must never need a terminal upgrade
+before it can reach the cloud. Sending half a stamp is rejected instead, because inheriting
+the missing half would silently pair one sale's mode with another line's rate.
+
+**The dev seed had no zero-rated product.** Every seeded item was 18%, so no cart on this
+machine could mix rates and the refusal path never ran outside its tests — which is part of
+how the gap survived from M1-07 to now. `BREAD-450` at 0% is now seeded.
+
+### M1-15 — the movement that never left the building
+
+**The local half was never the risk.** A `SALE` movement has been written in the sale's own
+transaction since M0-04, and three tests already covered it: the negative delta, the rollback
+leaving no orphan, and a retry not moving stock twice. Reading only that, the task looks done.
+
+**The gap was one table further on.** The cloud schema has had a `stock_movements` table since
+`V200`, complete with the unique index on `client_uuid` that the whole sync design turns on. Nothing
+ever inserted into it. `SyncIngestService` handled tenants, sales, sale items and payments, and the
+sale payload it read from had no `movements` key to handle. So the shop PC knew its stock and the
+cloud did not, and every test passed — because each half was consistent with itself.
+
+**The uuid has to be minted at the till, not at the far end.** This is the part worth remembering.
+The obvious cloud-side implementation derives a movement from each sale line, which works perfectly
+until a batch is redelivered: a movement invented at the far end gets a new uuid every time, so the
+`ON CONFLICT` guard never fires, and on-hand — being `Σ qty_delta` — walks down by one sale's worth
+per retry. Nothing errors. Nothing looks duplicated in the UI. The number is just quietly wrong, and
+"movements, not balances" is precisely the rule that stops anyone noticing, because there is no
+level column to disagree with. So `SaleService` now generates the uuid once, writes it locally, and
+puts that same value in the payload. The cloud upserts on the till's key or it is not idempotent.
+
+**Movements are ingested before the sale's immutability check, not after.** `upsertSale` returns
+early when the sale already has lines, on the reasoning that a rung-up sale cannot change. Movements
+sit above that return: they carry their own idempotency key so they do not need the guard, and
+putting them first means a sale ingested by a build older than this one can still have its movements
+backfilled the next time the shop resends. They also carry no `sale_id` in the cloud — a movement
+there is a fact about a product at a branch at a time, and returns (`M2-10`) and goods receipts
+(`M3-04`) will write the same table with no sale to hang from.
+
+**A till older than M1-15 still ingests.** A payload with no `movements` key is accepted and simply
+moves no stock, the same tolerance the M1-11 tender fields got. Rejecting it would strand every sale
+queued behind it in that shop's outbox — a compatibility break that costs the shop its whole day's
+sync, to protect a number the old till was never sending anyway.
 
 ### M1-13 / M1-14 — the receipt leaves the process
 

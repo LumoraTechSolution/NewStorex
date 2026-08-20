@@ -13,6 +13,10 @@ import type { Cart } from '@/lib/useCart';
  */
 export function TotalsPanel({ cart }: { cart: Cart }) {
   const { totals } = cart;
+  // More than one entry means the basket mixes rates (M1-18) — bread at 0% and arrack at
+  // 18%, say. One "VAT" figure spanning both would be a number the cashier cannot check
+  // against anything, so each rate gets its own row, exactly as the receipt prints them.
+  const mixed = totals.taxBreakdown.length > 1;
   const taxLabel = totals.taxMode === 'EXCLUSIVE' ? 'VAT added' : 'VAT included';
 
   return (
@@ -23,7 +27,20 @@ export function TotalsPanel({ cart }: { cart: Cart }) {
         {totals.discountMinor > 0 && (
           <Row label="Discount" value={`-${formatMinor(totals.discountMinor)}`} />
         )}
-        <Row label={taxLabel} value={formatMinor(totals.taxMinor)} muted />
+        {mixed ? (
+          totals.taxBreakdown.map((entry) => (
+            <Row
+              key={`${entry.mode}:${entry.rateBp}`}
+              // The rate is shown even at zero: "VAT 0%" says the line was considered and
+              // found exempt, where omitting the row says nothing at all.
+              label={`VAT ${entry.rateBp / 100}%`}
+              value={formatMinor(entry.taxMinor)}
+              muted
+            />
+          ))
+        ) : (
+          <Row label={taxLabel} value={formatMinor(totals.taxMinor)} muted />
+        )}
       </dl>
 
       <div className="border-hair mt-4 border-t pt-4">
