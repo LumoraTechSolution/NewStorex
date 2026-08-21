@@ -201,6 +201,9 @@ class SaleCommitTest {
     @Test
     void invoiceNumbersRunPerTerminalAndDoNotCollide() {
         Fixture fixture = seed();
+        // seed() opens a shift on T1 only; a second terminal is a second shift (M2-01), which is
+        // exactly the point — the unique index is scoped to (tenant, branch, terminal).
+        openShiftOn(fixture, "T2");
 
         SaleResponse t1a = sales.commit(requestOn(UUID.randomUUID(), fixture, "T1"));
         SaleResponse t1b = sales.commit(requestOn(UUID.randomUUID(), fixture, "T1"));
@@ -726,6 +729,61 @@ class SaleCommitTest {
      * {@code SaleService} now asserts it. Branch and product stay unique per test because this
      * class commits for real and would otherwise collide with its own leftovers.
      */
+    /**
+     * M2-01: a sale outside a shift is cash nothing reconciles, so the till refuses it.
+     *
+     * <p>Worth stating explicitly because it is a behaviour change to a path that was working:
+     * every terminal now has to open a shift before it can trade. It costs the offline guarantee
+     * nothing — opening a shift is entirely local — but a till that silently stopped selling
+     * would be the worst possible way to discover this rule.
+     */
+    @Test
+    void aSaleIsRefusedWhenNoShiftIsOpen() {
+        Fixture fixture = seed();
+        jdbc.update(
+                "UPDATE shifts SET status = 'CLOSED', closed_at = now(), closed_by = 1,"
+                        + " counted_cash_minor = 0, expected_cash_minor = 0, variance_minor = 0"
+                        + " WHERE tenant_id = ? AND terminal_code = 'T1' AND status = 'OPEN'",
+                fixture.tenantId());
+
+        assertThatThrownBy(() -> sales.commit(request(UUID.randomUUID(), fixture, 1, 45000)))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("No shift is open");
+    }
+
+    /** The shift a sale was rung up on is recorded on it — that link is what a Z-report reads. */
+    @Test
+    void aSaleRecordsTheShiftItWasRungUpOn() {
+        Fixture fixture = seed();
+        UUID saleUuid = UUID.randomUUID();
+        SaleResponse response = sales.commit(request(saleUuid, fixture, 1, 45000));
+
+        Long shiftId =
+                jdbc.queryForObject("SELECT shift_id FROM sales WHERE id = ?", Long.class, response.id());
+        assertThat(shiftId).isNotNull();
+
+        // And it travels to the cloud, so the console can group a day's takings by till.
+        assertThat(jsonField(saleUuid, "shiftClientUuid"))
+                .isEqualTo(
+                        jdbc.queryForObject(
+                                "SELECT client_uuid::text FROM shifts WHERE id = ?", String.class, shiftId));
+    }
+
+    private void openShiftOn(Fixture fixture, String terminalCode) {
+        jdbc.update(
+                """
+                INSERT INTO shifts (client_uuid, tenant_id, branch_id, terminal_code, status,
+                                    opened_by, opening_float_minor)
+                SELECT ?, ?, id, ?, 'OPEN', 1, 500000
+                  FROM branches WHERE tenant_id = ? AND code = ?
+                """,
+                UUID.randomUUID(),
+                fixture.tenantId(),
+                terminalCode,
+                fixture.tenantId(),
+                fixture.branchCode());
+    }
+
     private Fixture seed() {
         int n = UNIQUE.incrementAndGet();
         String branchCode = "B%02d".formatted(n);
@@ -756,6 +814,20 @@ class SaleCommitTest {
                 productUuid,
                 tenantId,
                 "SKU-%03d".formatted(n));
+
+        // M2-01. The till does not sell unreconciled, so every fixture opens a shift on T1.
+        // The rejection when one is not open is asserted on its own below.
+        jdbc.update(
+                """
+                INSERT INTO shifts (client_uuid, tenant_id, branch_id, terminal_code, status,
+                                    opened_by, opening_float_minor)
+                SELECT ?, ?, id, 'T1', 'OPEN', 1, 500000
+                  FROM branches WHERE tenant_id = ? AND code = ?
+                """,
+                UUID.randomUUID(),
+                tenantId,
+                tenantId,
+                branchCode);
 
         return new Fixture(tenantId, branchCode, productUuid);
     }

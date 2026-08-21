@@ -5,7 +5,9 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { CartLines } from '@/components/CartLines';
 import { FunctionBar, type FunctionKey } from '@/components/FunctionBar';
+import { RefundOverlay, type RefundOutcome } from '@/components/RefundOverlay';
 import { ScanField } from '@/components/ScanField';
+import { ShiftOverlay, type ClosedShift } from '@/components/ShiftOverlay';
 import { SyncStatusStrip } from '@/components/SyncStatusStrip';
 import { TenderOverlay, type TenderOutcome } from '@/components/TenderOverlay';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -13,6 +15,13 @@ import { TotalsPanel } from '@/components/TotalsPanel';
 import { buildReceiptWithDrawerKick, type ReceiptData } from '@/lib/receipt';
 import { useGlobalKeys } from '@/lib/scanner';
 import { useCart, type Cart, type Product } from '@/lib/useCart';
+import { useShift } from '@/lib/useShift';
+import {
+  buildCreditNoteWithDrawerKick,
+  buildZReport,
+  type CreditNoteData,
+  type ZReportData,
+} from '@/lib/zreport';
 
 type Committed = {
   invoiceNumber: string;
@@ -57,25 +66,41 @@ function receiptDataFor(cart: Cart, outcome: TenderOutcome, committed: Committed
 }
 
 /**
- * Best-effort. The sale committed on the backend before this ever runs (M1-11) — a print
- * failure must never look like the sale failed, so this never throws; it reports what
- * happened and lets the caller decide how to tell the cashier.
+ * Best-effort printing, for every document the till produces.
+ *
+ * The thing being printed has already been committed on the backend before this runs — a sale
+ * (M1-11), a credit note (M2-06) or a closed shift (M2-11). A print failure must therefore never
+ * look like the underlying action failed, so this never throws: it reports what happened and lets
+ * the caller decide how to say so.
+ *
+ * Takes bytes rather than the document, so the same path serves all three and there is exactly
+ * one place that knows how a print failure is handled.
  */
-async function printReceipt(
-  cart: Cart,
-  outcome: TenderOutcome,
-  committed: Committed,
+async function print(
+  bytes: Uint8Array,
 ): Promise<{ ok: true } | { ok: false; error: string } | null> {
   if (!window.lumora?.printer) {
     // Not running inside the desktop shell — `next dev` in a plain browser tab, most likely.
     return null;
   }
-  const bytes = buildReceiptWithDrawerKick(receiptDataFor(cart, outcome, committed));
   try {
     return await window.lumora.printer.print(bytes);
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** Appends "…and the paper did not come out" to a message, when that is what happened. */
+function withPrintOutcome(
+  text: string,
+  result: Awaited<ReturnType<typeof print>>,
+  what: string,
+): { text: string; failed: boolean } {
+  const failed = result !== null && !result.ok;
+  return {
+    text: failed ? `${text} — ${what} did not print: ${(result as { error: string }).error}` : text,
+    failed,
+  };
 }
 
 /**
@@ -98,6 +123,11 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [picker, setPicker] = useState<Product[] | null>(null);
   const [tendering, setTendering] = useState(false);
+  const [cashingUp, setCashingUp] = useState(false);
+  const [returning, setReturning] = useState(false);
+
+  // M2-01. Whether this till may trade at all, answered by the backend and never assumed.
+  const shift = useShift(BRANCH_CODE, TERMINAL_CODE);
 
   // ------------------------------------------------------------------ catalogue lookup
 
@@ -159,9 +189,19 @@ export default function Page() {
   /** F12 from the cart screen: opens the tender overlay, does not commit anything yet. */
   const openTender = useCallback(() => {
     if (cart.lines.length === 0 || busy) return;
+    // M2-01. The backend refuses a sale with no open shift, and it is a much better experience to
+    // say so before the cashier has tendered than after. This is a courtesy, not the enforcement:
+    // SaleService is where the rule actually lives.
+    if (!shift.canTrade) {
+      setMessage({
+        tone: 'danger',
+        text: 'No shift is open — press F10 to open one before selling',
+      });
+      return;
+    }
     setMessage(null);
     setTendering(true);
-  }, [busy, cart]);
+  }, [busy, cart, shift.canTrade]);
 
   /**
    * What the tender overlay calls once it is settled and the cashier pressed F12 there. The
@@ -215,21 +255,22 @@ export default function Page() {
         if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
 
         const committed = body as Committed;
-        let text = `${committed.invoiceNumber} — ${formatMinor(committed.totalMinor)}${
+        const text = `${committed.invoiceNumber} — ${formatMinor(committed.totalMinor)}${
           committed.changeMinor > 0 ? ` · change ${formatMinor(committed.changeMinor)}` : ''
         }${committed.alreadyExisted ? ' (already existed)' : ''}`;
 
         // The receipt and the drawer kick are one print job (M1-14) — best-effort, and never
         // allowed to make a committed sale look like it failed.
-        const printResult = await printReceipt(cart, outcome, committed);
-        const printFailed = printResult !== null && !printResult.ok;
-        if (printResult && !printResult.ok) {
-          text += ` — receipt did not print: ${printResult.error}`;
-        }
+        const printed = await print(
+          buildReceiptWithDrawerKick(receiptDataFor(cart, outcome, committed)),
+        );
+        const outcomeText = withPrintOutcome(text, printed, 'receipt');
 
-        setMessage({ tone: printFailed ? 'danger' : 'ok', text });
+        setMessage({ tone: outcomeText.failed ? 'danger' : 'ok', text: outcomeText.text });
         setTendering(false);
         clear();
+        // A sale changes the shift's counters, which the status strip shows.
+        void shift.refresh();
       } catch (e) {
         // The cart survives a failed submit — the cashier presses F12 again to retry
         // tendering rather than re-ringing up every line.
@@ -239,14 +280,81 @@ export default function Page() {
         setBusy(false);
       }
     },
-    [cart, clear],
+    [cart, clear, shift],
+  );
+
+  // ---------------------------------------------------------------------- cash up (M2)
+
+  /**
+   * Printed the moment a shift closes, unprompted.
+   *
+   * A Z-report a cashier has to remember to ask for is a Z-report that does not get filed. The
+   * figures come from the backend's frozen record (M2-11), not from anything this screen kept.
+   */
+  const printZReport = useCallback(async (closed: ClosedShift) => {
+    try {
+      const response = await fetch(`/api/reports/z/${closed.id}`, { cache: 'no-store' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
+
+      const report = body as Omit<ZReportData, 'storeName' | 'tagline'>;
+      const printed = await print(
+        buildZReport({ ...report, storeName: STORE_NAME, tagline: TAGLINE }),
+      );
+      const varianceText =
+        closed.varianceMinor === 0
+          ? 'drawer balanced'
+          : `drawer ${closed.varianceMinor > 0 ? 'over' : 'short'} ${formatMinor(Math.abs(closed.varianceMinor))}`;
+      const outcome = withPrintOutcome(`Shift closed — ${varianceText}`, printed, 'Z-report');
+      setMessage({ tone: outcome.failed ? 'danger' : 'ok', text: outcome.text });
+    } catch (e) {
+      // The shift is closed either way. Say what happened to the paper, not that the close failed.
+      setMessage({
+        tone: 'danger',
+        text: `Shift closed, but the Z-report could not be built: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------- returns (M2)
+
+  const onRefunded = useCallback(
+    async (outcome: RefundOutcome) => {
+      setReturning(false);
+      const data: CreditNoteData = {
+        storeName: STORE_NAME,
+        tagline: TAGLINE,
+        branchCode: BRANCH_CODE,
+        terminalCode: TERMINAL_CODE,
+        creditNoteNumber: outcome.creditNoteNumber,
+        saleInvoiceNumber: outcome.saleInvoiceNumber,
+        refundedAt: outcome.refundedAt,
+        lines: outcome.lines,
+        totalMinor: outcome.totalMinor,
+        taxMinor: outcome.taxMinor,
+        roundingAdjustmentMinor: outcome.roundingAdjustmentMinor,
+        tenders: outcome.tenders,
+      };
+      const printed = await print(buildCreditNoteWithDrawerKick(data));
+      const text = withPrintOutcome(
+        `${outcome.creditNoteNumber} — refunded ${formatMinor(outcome.totalMinor)} against ${outcome.saleInvoiceNumber}`,
+        printed,
+        'credit note',
+      );
+      setMessage({ tone: text.failed ? 'danger' : 'ok', text: text.text });
+      void shift.refresh();
+    },
+    [shift],
   );
 
   // -------------------------------------------------------------------- keyboard (M1-10)
 
   // Only one modal owns the keyboard at a time. Neither the picker nor the overlay nests
   // inside the other — opening one is only possible from the plain cart screen.
-  const interactionsBlocked = useCallback(() => picker !== null || tendering, [picker, tendering]);
+  const interactionsBlocked = useCallback(
+    () => picker !== null || tendering || cashingUp || returning,
+    [cashingUp, picker, returning, tendering],
+  );
   const noPicker = useCallback(() => !interactionsBlocked(), [interactionsBlocked]);
 
   useGlobalKeys([
@@ -257,8 +365,14 @@ export default function Page() {
     { key: 'F2', run: () => changeQty(cart.selected, 1), when: noPicker },
     { key: 'F4', run: () => voidLine(cart.selected), when: noPicker },
     { key: 'F8', run: clear, when: noPicker },
+    { key: 'F9', run: () => setReturning(true), when: noPicker },
+    { key: 'F10', run: () => setCashingUp(true), when: noPicker },
     { key: 'F12', run: openTender, when: noPicker },
-    { key: 'Escape', run: () => setPicker(null), when: () => !tendering },
+    {
+      key: 'Escape',
+      run: () => setPicker(null),
+      when: () => !tendering && !cashingUp && !returning,
+    },
   ]);
 
   // The picker is the one place selection leaves the cart, so it owns the arrows while open.
@@ -295,14 +409,14 @@ export default function Page() {
     { key: 'F6', label: 'Customer' },
     { key: 'F7', label: 'Hold' },
     { key: 'F8', label: 'Clear', run: clear, disabled: cart.lines.length === 0 },
-    { key: 'F9', label: 'Return' },
-    { key: 'F10', label: 'Cash up' },
+    { key: 'F9', label: 'Return', run: () => setReturning(true), disabled: !shift.canTrade },
+    { key: 'F10', label: shift.canTrade ? 'Cash up' : 'Open shift', run: () => setCashingUp(true) },
     { key: 'F11', label: 'Reprint' },
     {
       key: 'F12',
       label: busy ? 'Working…' : 'Tender',
       run: openTender,
-      disabled: cart.lines.length === 0 || busy,
+      disabled: cart.lines.length === 0 || busy || !shift.canTrade,
     },
   ];
 
@@ -320,6 +434,28 @@ export default function Page() {
         </div>
         <ThemeToggle />
       </header>
+
+      {/*
+        Shown whenever the till cannot sell, and only then. Not a toast: this is a state the
+        cashier has to act on, so it stays on screen until they do. `status === null` means the
+        backend has not answered yet, which is not the same as no shift — see useShift.
+      */}
+      {shift.status !== null && !shift.canTrade && (
+        <p
+          role="status"
+          className="border-pending text-pending shrink-0 border-l-2 px-4 py-2 text-sm"
+        >
+          No shift is open on this till — press F10 to count the float and open one.
+        </p>
+      )}
+      {shift.error && (
+        <p
+          role="status"
+          className="border-pending text-pending shrink-0 border-l-2 px-4 py-2 text-sm"
+        >
+          Cannot reach the till service: {shift.error}
+        </p>
+      )}
 
       {message && (
         <p
@@ -372,6 +508,26 @@ export default function Page() {
             </ul>
           </div>
         </div>
+      )}
+
+      {cashingUp && (
+        <ShiftOverlay
+          status={shift.status}
+          branchCode={BRANCH_CODE}
+          terminalCode={TERMINAL_CODE}
+          onDone={() => void shift.refresh()}
+          onClosed={(closed) => void printZReport(closed)}
+          onCancel={() => setCashingUp(false)}
+        />
+      )}
+
+      {returning && (
+        <RefundOverlay
+          branchCode={BRANCH_CODE}
+          terminalCode={TERMINAL_CODE}
+          onDone={(outcome) => void onRefunded(outcome)}
+          onCancel={() => setReturning(false)}
+        />
       )}
 
       {tendering && (

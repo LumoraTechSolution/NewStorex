@@ -3,7 +3,7 @@ package com.lumora.pos.invoice;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.lumora.pos.sale.SaleRejectedException;
+import com.lumora.pos.web.RejectedException;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -91,8 +91,10 @@ class InvoiceNumberAllocatorTest {
                         () ->
                                 allocator.allocate(
                                         fixture.tenantId(), fixture.branchId(), fixture.branchCode(), terminal))
-                .isInstanceOf(SaleRejectedException.class)
-                .hasMessageContaining("Invoice block exhausted")
+                // RejectedException, not SaleRejectedException: since M2-06 this allocator also
+                // issues credit-note numbers, so it can no longer speak only about sales.
+                .isInstanceOf(RejectedException.class)
+                .hasMessageContaining("INVOICE block exhausted")
                 .hasMessageContaining(terminal);
     }
 

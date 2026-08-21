@@ -2,6 +2,8 @@ package com.lumora.pos.sale;
 
 import com.lumora.pos.invoice.InvoiceNumberAllocator;
 import com.lumora.pos.outbox.OutboxWriter;
+import com.lumora.pos.shift.ShiftService;
+import com.lumora.pos.shop.LocalShop;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.HashMap;
@@ -9,7 +11,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -30,21 +31,23 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SaleService {
 
-    /**
-     * Until users exist (M3-08) every movement is attributed to the seeded operator. This is a
-     * placeholder for a real id, not a null-object — the column is NOT NULL because "who did this"
-     * is the point of an audit trail.
-     */
-    private static final long SEEDED_OPERATOR_ID = 1L;
-
     private final JdbcTemplate jdbc;
     private final OutboxWriter outbox;
     private final InvoiceNumberAllocator invoiceNumbers;
+    private final LocalShop shop;
+    private final ShiftService shifts;
 
-    public SaleService(JdbcTemplate jdbc, OutboxWriter outbox, InvoiceNumberAllocator invoiceNumbers) {
+    public SaleService(
+            JdbcTemplate jdbc,
+            OutboxWriter outbox,
+            InvoiceNumberAllocator invoiceNumbers,
+            LocalShop shop,
+            ShiftService shifts) {
         this.jdbc = jdbc;
         this.outbox = outbox;
         this.invoiceNumbers = invoiceNumbers;
+        this.shop = shop;
+        this.shifts = shifts;
     }
 
     @Transactional
@@ -58,24 +61,29 @@ public class SaleService {
 
         assertTotalsAreSelfConsistent(request);
 
-        Branch branch = resolveBranch(request.branchCode());
+        LocalShop.Branch branch = shop.branch(request.branchCode());
+
+        // M2-01. The till does not sell unreconciled: a sale outside a shift is cash that
+        // nothing counts at the end of the day, which is the hole M2 exists to close. This
+        // rejects rather than attaching nothing — and it costs the offline guarantee nothing,
+        // because opening a shift is entirely local. §A is about the network being on the
+        // critical path of nothing, not about the till having no workflow.
+        long shiftId =
+                shifts.requireOpenShiftId(branch.tenantId(), branch.id(), request.terminalCode());
+
         Instant soldAt = request.soldAt() != null ? request.soldAt() : Instant.now();
         String invoiceNumber =
                 invoiceNumbers.allocate(
                         branch.tenantId(), branch.id(), branch.code(), request.terminalCode());
 
-        long saleId;
-        try {
-            saleId = insertSale(request, branch, invoiceNumber, soldAt);
-        } catch (DuplicateKeyException raced) {
-            // Two identical requests in flight at once; the unique index on client_uuid settled
-            // it. Whichever lost re-reads the winner's sale.
-            SaleResponse winner = findByClientUuid(request.clientUuid());
-            if (winner != null) {
-                return winner;
-            }
-            throw raced;
-        }
+        // Two identical requests in flight at once are settled by the unique index on
+        // client_uuid, and the loser is deliberately not caught here. Postgres aborts the whole
+        // transaction on a constraint violation, so a catch block cannot read the winner back —
+        // the recovery query fails with 25P02 and the real error is replaced by a confusing one.
+        // Letting it roll back is the only correct recovery: the terminal retries, and the
+        // findByClientUuid at the top of this method returns the winner's sale. Found while
+        // building M2-01, which needed the same shape and could not make it work either.
+        long saleId = insertSale(request, branch, invoiceNumber, soldAt, shiftId);
 
         LinesAndMovements written = insertLinesAndMovements(request, branch, saleId);
         List<Map<String, Object>> tenderPayloads = insertPayments(request, saleId);
@@ -89,7 +97,8 @@ public class SaleService {
                         soldAt,
                         written.lines(),
                         written.movements(),
-                        tenderPayloads));
+                        tenderPayloads,
+                        shiftClientUuid(shiftId)));
 
         return new SaleResponse(
                 request.clientUuid(),
@@ -187,14 +196,19 @@ public class SaleService {
     // ----------------------------------------------------------------------- writes
 
     private long insertSale(
-            CreateSaleRequest request, Branch branch, String invoiceNumber, Instant soldAt) {
+            CreateSaleRequest request,
+            LocalShop.Branch branch,
+            String invoiceNumber,
+            Instant soldAt,
+            long shiftId) {
         return jdbc.queryForObject(
                 """
                 INSERT INTO sales (
                     client_uuid, tenant_id, branch_id, terminal_code, invoice_number,
                     subtotal_minor, discount_minor, tax_minor, total_minor,
-                    tax_mode, tax_rate_bp, sold_at, rounding_adjustment_minor, change_minor)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tax_mode, tax_rate_bp, sold_at, rounding_adjustment_minor, change_minor,
+                    shift_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -211,7 +225,8 @@ public class SaleService {
                 request.taxRateBp(),
                 Timestamp.from(soldAt),
                 request.roundingAdjustmentMinor(),
-                request.changeMinor());
+                request.changeMinor(),
+                shiftId);
     }
 
     /** One row per tender line, in the same order the cashier entered them (M1-11). */
@@ -239,7 +254,7 @@ public class SaleService {
     }
 
     private LinesAndMovements insertLinesAndMovements(
-            CreateSaleRequest request, Branch branch, long saleId) {
+            CreateSaleRequest request, LocalShop.Branch branch, long saleId) {
 
         List<Map<String, Object>> payloads = new java.util.ArrayList<>();
         List<Map<String, Object>> movements = new java.util.ArrayList<>();
@@ -296,7 +311,7 @@ public class SaleService {
                     productId,
                     -line.qty(),
                     saleId,
-                    SEEDED_OPERATOR_ID);
+                    LocalShop.SEEDED_OPERATOR_ID);
 
             Map<String, Object> movement = new LinkedHashMap<>();
             movement.put("clientUuid", movementUuid);
@@ -327,7 +342,8 @@ public class SaleService {
             Instant soldAt,
             List<Map<String, Object>> lines,
             List<Map<String, Object>> movements,
-            List<Map<String, Object>> tenders) {
+            List<Map<String, Object>> tenders,
+            UUID shiftClientUuid) {
 
         Map<String, Object> payload = new HashMap<>();
         payload.put("clientUuid", request.clientUuid());
@@ -346,10 +362,15 @@ public class SaleService {
         payload.put("lines", lines);
         payload.put("movements", movements);
         payload.put("tenders", tenders);
+        payload.put("shiftClientUuid", shiftClientUuid);
         return payload;
     }
 
     // ---------------------------------------------------------------------- lookups
+
+    private UUID shiftClientUuid(long shiftId) {
+        return jdbc.queryForObject("SELECT client_uuid FROM shifts WHERE id = ?", UUID.class, shiftId);
+    }
 
     private SaleResponse findByClientUuid(UUID clientUuid) {
         List<SaleResponse> found =
@@ -371,39 +392,6 @@ public class SaleService {
         return found.isEmpty() ? null : found.get(0);
     }
 
-    /**
-     * A shop PC holds exactly one tenant — that is what "desktop" means. Branch codes are only
-     * unique within a tenant, so the lookup is scoped to that one, and the invariant is asserted
-     * rather than assumed: a second tenant here means something upstream is wrong, and finding out
-     * at the next sale with a confusing error is worse than finding out now.
-     *
-     * <p>When the cloud needs this logic (M4-01) the tenant comes from the request's authenticated
-     * context instead. This method is the seam where that changes.
-     */
-    private Branch resolveBranch(String branchCode) {
-        long tenantId = resolveSoleTenantId();
-        try {
-            return jdbc.queryForObject(
-                    "SELECT id, tenant_id, code FROM branches WHERE tenant_id = ? AND code = ?",
-                    (rs, row) -> new Branch(rs.getLong("id"), rs.getLong("tenant_id"), rs.getString("code")),
-                    tenantId,
-                    branchCode);
-        } catch (EmptyResultDataAccessException e) {
-            throw new SaleRejectedException("Unknown branch code: " + branchCode);
-        }
-    }
-
-    private long resolveSoleTenantId() {
-        List<Long> tenantIds = jdbc.queryForList("SELECT id FROM tenants ORDER BY id", Long.class);
-        if (tenantIds.size() != 1) {
-            throw new IllegalStateException(
-                    "A desktop database must contain exactly one tenant, found "
-                            + tenantIds.size()
-                            + ". Reset it with `pnpm db:reset` and reseed with `pnpm db:seed`.");
-        }
-        return tenantIds.get(0);
-    }
-
     private long resolveProductId(UUID productClientUuid) {
         try {
             return jdbc.queryForObject(
@@ -412,8 +400,6 @@ public class SaleService {
             throw new SaleRejectedException("Unknown product: " + productClientUuid);
         }
     }
-
-    private record Branch(long id, long tenantId, String code) {}
 
     /**
      * What one pass over the cart wrote: the sale lines, and the stock movements they caused. The

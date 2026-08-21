@@ -1,6 +1,5 @@
 package com.lumora.pos.web;
 
-import com.lumora.pos.sale.SaleRejectedException;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -21,8 +20,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
-    @ExceptionHandler(SaleRejectedException.class)
-    public ResponseEntity<Map<String, Object>> saleRejected(SaleRejectedException e) {
+    @ExceptionHandler(RejectedException.class)
+    public ResponseEntity<Map<String, Object>> rejected(RejectedException e) {
         return ResponseEntity.unprocessableEntity().body(body(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage()));
     }
 

@@ -51,8 +51,12 @@ export default defineConfig({
 
   webServer: [
     {
-      // The Maven wrapper, not `mvn` — there is no `mvn` on PATH on this machine.
-      command: 'mvnw.cmd -q spring-boot:run',
+      // The Maven wrapper, not `mvn` — there is no `mvn` on PATH on this machine. And
+      // `.\mvnw.cmd`, not `mvnw.cmd`: cmd.exe does not search the current directory for
+      // executables, so the bare name fails with "not recognized" the moment Playwright
+      // actually has to start the backend. That went unnoticed until M2 because a backend
+      // left running from a dev session always satisfied reuseExistingServer first.
+      command: '.\\mvnw.cmd -q spring-boot:run',
       cwd: '../../services/backend',
       url: 'http://127.0.0.1:8081/actuator/health',
       reuseExistingServer: true,

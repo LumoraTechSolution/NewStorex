@@ -55,6 +55,18 @@ WHERE p.client_uuid = v.product_client_uuid
 -- collision is on (tenant_id, barcode) and naming one index would abort the statement.
 ON CONFLICT DO NOTHING;
 
+-- M2. The variance threshold (D1) and a manager PIN for refunds (M2-07).
+--
+-- The hash is BCrypt of "1234" — a development PIN, and the file it lives in is a development
+-- seed that never runs on a shop PC (M5-03's first-run wizard provisions a real one). It is
+-- written here rather than left NULL because a NULL refuses every refund, which is the correct
+-- production default and a useless one for anybody trying the returns flow.
+INSERT INTO tenant_settings (tenant_id, cash_variance_threshold_minor, manager_pin_hash)
+SELECT id, 10000, '$2a$10$uarjBQx1U89pNHyI6orBeOVkYAQbadgeECRV33UtlCj223pkkrgWy'
+FROM tenants WHERE client_uuid = '00000000-0000-4000-8000-000000000001'
+ON CONFLICT (tenant_id) DO NOTHING;
+
 SELECT 'seeded: ' || (SELECT count(*) FROM products) || ' products, '
                   || (SELECT count(*) FROM product_barcodes) || ' barcodes, '
-                  || (SELECT count(*) FROM branches) || ' branch(es)' AS result;
+                  || (SELECT count(*) FROM branches) || ' branch(es), '
+                  || (SELECT count(*) FROM tenant_settings) || ' settings row(s)' AS result;

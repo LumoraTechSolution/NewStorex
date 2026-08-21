@@ -19,6 +19,8 @@
  * | `cart.ts`     | line and order discounts, apportionment, cart totals       | M1-03 |
  * | `rounding.ts` | the LKR cash rounding policy                               | M1-03 |
  * | `tender.ts`   | multi-tender, split payment, change calculation            | M1-11 |
+ * | `cashup.ts`   | denomination counts, expected cash, shift variance         | M2-01 |
+ * | `refund.ts`   | partial-return apportionment, refund tender rules          | M2-06 |
  *
  * The invariants these uphold are stated once, in `cart.ts`, because they are the
  * contract the backend's checksum enforces. Property-based tests in `cart.test.ts` assert
@@ -30,3 +32,5 @@ export * from './vat';
 export * from './cart';
 export * from './rounding';
 export * from './tender';
+export * from './cashup';
+export * from './refund';

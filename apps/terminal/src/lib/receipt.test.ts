@@ -1,48 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { decodeEscPos as decode, escPosLines as textLines } from './escposDecode';
 import { buildReceipt, buildReceiptWithDrawerKick, type ReceiptData } from './receipt';
-
-/**
- * Strips ESC/POS *command* bytes rather than merely non-printable ones — several commands
- * (`ESC E`, `ESC a`, `ESC d`, `GS !`, `GS V`) have a parameter byte that lands inside the
- * printable ASCII range (e.g. `ESC E 0x01` includes 0x45, `'E'`), so filtering by byte value
- * alone would splice stray letters into the decoded text. Each command's exact length is
- * skipped instead, leaving only the bytes `escpos.ts` meant as receipt content.
- */
-function decode(bytes: Uint8Array): string {
-  const b = Array.from(bytes);
-  let out = '';
-  let i = 0;
-  while (i < b.length) {
-    const byte = b[i];
-    if (byte === 0x1b) {
-      // ESC @ (2) | ESC a n / ESC E n / ESC d n (3) | ESC p m t1 t2 (5)
-      const cmd = b[i + 1];
-      i += cmd === 0x40 ? 2 : cmd === 0x70 ? 5 : 3;
-      continue;
-    }
-    if (byte === 0x1d) {
-      // GS ! n | GS V m (3)
-      i += 3;
-      continue;
-    }
-    if (byte === 0x0a) {
-      out += '\n';
-      i++;
-      continue;
-    }
-    if (byte !== undefined && byte >= 0x20 && byte <= 0x7e) {
-      out += String.fromCharCode(byte);
-    }
-    i++;
-  }
-  return out;
-}
-
-/** Text lines only — the printable content a cashier or a test can actually read. */
-function textLines(bytes: Uint8Array): string[] {
-  return decode(bytes).split('\n');
-}
 
 const BASE: ReceiptData = {
   storeName: 'StoreX',
