@@ -2,9 +2,10 @@ package com.lumora.pos.refund;
 
 import com.lumora.pos.invoice.InvoiceNumberAllocator;
 import com.lumora.pos.outbox.OutboxWriter;
-import com.lumora.pos.settings.TenantSettingsService;
 import com.lumora.pos.shift.ShiftService;
 import com.lumora.pos.shop.LocalShop;
+import com.lumora.pos.user.Permission;
+import com.lumora.pos.user.UserService;
 import com.lumora.pos.web.RejectedException;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -59,7 +60,7 @@ public class RefundService {
     private final OutboxWriter outbox;
     private final LocalShop shop;
     private final ShiftService shifts;
-    private final TenantSettingsService settings;
+    private final UserService users;
     private final InvoiceNumberAllocator numbers;
 
     public RefundService(
@@ -67,13 +68,13 @@ public class RefundService {
             OutboxWriter outbox,
             LocalShop shop,
             ShiftService shifts,
-            TenantSettingsService settings,
+            UserService users,
             InvoiceNumberAllocator numbers) {
         this.jdbc = jdbc;
         this.outbox = outbox;
         this.shop = shop;
         this.shifts = shifts;
-        this.settings = settings;
+        this.users = users;
         this.numbers = numbers;
     }
 
@@ -226,12 +227,25 @@ public class RefundService {
 
         LocalShop.Branch branch = shop.branch(request.branchCode());
 
-        // M2-07, before anything is read or written. An unset PIN refuses here, not later.
-        settings.verifyManagerPin(branch.tenantId(), request.managerPin());
+        // M2-07, before anything is read or written. A PIN that does not belong to somebody
+        // holding AUTHORISE_REFUND refuses here, not later.
+        //
+        // M3-08 changed who this asks. It was a single shop-wide manager PIN; it is now a named
+        // user, which is what makes `authorised_by` below worth having — the column existed from
+        // V108 but could only ever hold the placeholder. The refusal is unchanged in strength and
+        // the audit trail is the part that got better.
+        UserService.Operator authorisedBy =
+                users.authorise(
+                        branch.tenantId(),
+                        request.managerCode(),
+                        request.managerPin(),
+                        Permission.AUTHORISE_REFUND);
 
         // M2-06. The sale is looked up by the number on the receipt, and its absence ends this.
         RefundableSaleResponse sale = lookup(request.invoiceNumber());
-        long shiftId = shifts.requireOpenShiftId(branch.tenantId(), branch.id(), request.terminalCode());
+        ShiftService.OpenShift shift =
+                shifts.requireOpenShift(branch.tenantId(), branch.id(), request.terminalCode());
+        long shiftId = shift.id();
 
         assertLinesAreReturnable(sale, request);
         assertTendersAreAllowed(sale, request);
@@ -269,11 +283,17 @@ public class RefundService {
                             request.totalMinor(),
                             request.taxMinor(),
                             request.roundingAdjustmentMinor(),
-                            LocalShop.SEEDED_OPERATOR_ID,
-                            LocalShop.SEEDED_OPERATOR_ID,
+                            authorisedBy.id(),
+                            // Who processed it, as distinct from who allowed it (V108). These are
+                            // usually two people — the cashier at the counter and the supervisor
+                            // who walked over — and the pair only became recordable with M3-08.
+                            // The cashier is the shift's operator; the authoriser just proved who
+                            // they are at the keypad.
+                            shift.operatorId(),
                             Timestamp.from(refundedAt));
 
-        List<Map<String, Object>> linePayloads = insertLinesAndMovements(request, sale, branch, refundId);
+        List<Map<String, Object>> linePayloads =
+                insertLinesAndMovements(request, sale, branch, refundId, shift.operatorId());
         List<Map<String, Object>> tenderPayloads = insertPayments(request, refundId);
 
         outbox.enqueue(
@@ -448,7 +468,8 @@ public class RefundService {
             CreateRefundRequest request,
             RefundableSaleResponse sale,
             LocalShop.Branch branch,
-            long refundId) {
+            long refundId,
+            long operatorId) {
 
         Map<Integer, RefundableSaleResponse.Line> byLineNo = new LinkedHashMap<>();
         for (RefundableSaleResponse.Line line : sale.lines()) {
@@ -525,7 +546,7 @@ public class RefundService {
                         saleLine.saleItemId(),
                         requested.qty(),
                         refundId,
-                        LocalShop.SEEDED_OPERATOR_ID);
+                        operatorId);
 
                 Map<String, Object> movement = new LinkedHashMap<>();
                 movement.put("clientUuid", movementUuid);

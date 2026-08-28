@@ -6,11 +6,13 @@ import { buildReceipt, buildReceiptWithDrawerKick, type ReceiptData } from './re
 const BASE: ReceiptData = {
   storeName: 'StoreX',
   tagline: 'Powered by Lumora Tech',
+  storeAddress: '123 Peradeniya Road, Kandy',
   branchName: 'Kandy Main',
   branchCode: 'KND',
   terminalCode: 'T1',
   invoiceNumber: 'KND-T1-000042',
   soldAt: '2026-08-17T09:12:09.000Z',
+  customerName: null,
   lines: [
     { name: 'Ceylon Tea 400g', qty: 2, unitPriceMinor: 45000, lineTotalMinor: 90000 },
     { name: 'Samba Rice 5kg', qty: 1, unitPriceMinor: 285000, lineTotalMinor: 285000 },
@@ -174,6 +176,66 @@ describe('buildReceipt', () => {
     for (const l of lines) {
       expect(l.length).toBeLessThanOrEqual(42);
     }
+  });
+
+  // ---------------------------------------------------------------- M5-09 header fields
+
+  it('prints the shop address under the tagline', () => {
+    const rows = textLines(buildReceipt(BASE)).filter((l) => l.length > 0);
+    expect(rows[1]).toBe('Powered by Lumora Tech');
+    expect(rows[2]).toBe('123 Peradeniya Road, Kandy');
+  });
+
+  it('wraps a long address at word boundaries rather than mid-word', () => {
+    const long: ReceiptData = {
+      ...BASE,
+      storeAddress: 'No. 148/3B Sri Dharmapala Mawatha, Peradeniya Road, Kandy 20000',
+    };
+    const rows = textLines(buildReceipt(long, 42)).filter((l) => l.length > 0);
+    const address = rows.slice(2, 4);
+    expect(address.length).toBe(2);
+    for (const row of address) expect(row.length).toBeLessThanOrEqual(42);
+    // Reassembling the printed lines must give the address back — nothing lost, nothing split
+    // through the middle of a word.
+    expect(address.join(' ')).toBe(long.storeAddress);
+  });
+
+  it('keeps an explicit newline in the address as a second printed line', () => {
+    const twoLine: ReceiptData = { ...BASE, storeAddress: 'No. 148/3B\nKandy 20000' };
+    const rows = textLines(buildReceipt(twoLine)).filter((l) => l.length > 0);
+    expect(rows[2]).toBe('No. 148/3B');
+    expect(rows[3]).toBe('Kandy 20000');
+  });
+
+  it('prints nothing for an empty address', () => {
+    const none: ReceiptData = { ...BASE, storeAddress: '' };
+    const rows = textLines(buildReceipt(none)).filter((l) => l.length > 0);
+    expect(rows[2]).toBe('Kandy Main                         Till T1');
+  });
+
+  it('prints the customer name when one is attached', () => {
+    const attached: ReceiptData = { ...BASE, customerName: 'Nimal Perera' };
+    expect(decode(buildReceipt(attached))).toContain('Customer: Nimal Perera');
+  });
+
+  it('prints the label blank for a walk-in, so a name can be written on it', () => {
+    const printed = textLines(buildReceipt(BASE));
+    // The line is present and carries only the label — never omitted, because a customer
+    // asking for a tax invoice afterwards would otherwise need the receipt reprinting.
+    expect(printed).toContain('Customer:');
+    expect(decode(buildReceipt(BASE))).not.toContain('Customer: ');
+  });
+
+  it('treats a whitespace-only customer name as no customer', () => {
+    const blank: ReceiptData = { ...BASE, customerName: '   ' };
+    expect(textLines(buildReceipt(blank))).toContain('Customer:');
+  });
+
+  it('clips a customer name that would overflow the paper', () => {
+    const long: ReceiptData = { ...BASE, customerName: 'X'.repeat(80) };
+    const rows = textLines(buildReceipt(long, 42));
+    const row = rows.find((l) => l.startsWith('Customer:'));
+    expect(row?.length).toBe(42);
   });
 });
 

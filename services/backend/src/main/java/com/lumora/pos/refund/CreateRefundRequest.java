@@ -24,9 +24,14 @@ import java.util.UUID;
  *
  * @param invoiceNumber the number on the customer's receipt. There is no path to a refund that does
  *     not start here (M2-06).
- * @param managerPin M2-07. Sent per refund rather than exchanged for a session token: a token
- *     outlives the manager's attention, and "the manager unlocked it an hour ago" is not
- *     authorisation for this refund. It is never stored, only compared.
+ * @param managerCode who is authorising, and {@code managerPin} their PIN. M2-07 asked for a
+ *     single shop-wide PIN; M3-08 made it a named user holding {@code AUTHORISE_REFUND}, which is
+ *     what finally makes {@code refunds.authorised_by} worth reading. The code is needed because a
+ *     PIN alone does not identify anybody — two people may pick 1234, and an audit trail that can
+ *     name the wrong authoriser is worse than none, because it will be believed.
+ * @param managerPin sent per refund rather than exchanged for a session token: a token outlives the
+ *     manager's attention, and "the manager unlocked it an hour ago" is not authorisation for this
+ *     refund. It is never stored, only compared.
  * @param roundingAdjustmentMinor {@code cashPayable − cash allocated} from {@code
  *     allocateRefundTenders}. Signed; the shop absorbs it either way. Zero unless cash is actually
  *     going back across the counter.
@@ -36,6 +41,7 @@ public record CreateRefundRequest(
         @NotBlank String branchCode,
         @NotBlank String terminalCode,
         @NotBlank String invoiceNumber,
+        @NotBlank String managerCode,
         @NotBlank String managerPin,
         Instant refundedAt,
         @NotNull @Min(1) Long totalMinor,

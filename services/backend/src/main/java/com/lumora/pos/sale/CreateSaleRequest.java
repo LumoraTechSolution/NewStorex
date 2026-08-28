@@ -36,6 +36,13 @@ import java.util.UUID;
  * @param changeMinor what was handed back to the customer. Never negative.
  * @param tenders one line per payment instrument. More than one only when the sale was split
  *     (M1-11) — most sales carry exactly one.
+ * @param customerClientUuid who the sale was for, or null (M3-11). Null is the normal case and
+ *     stays that way: the overwhelming majority of sales in a grocery are anonymous, and a
+ *     required customer would be a prompt between the last item and the drawer opening.
+ *     <p>Attaching one changes nothing about the money. That is a v1 decision, not an oversight —
+ *     the moment a customer can change what is charged, a mis-tap at the till stops being a wrong
+ *     name on a receipt and becomes a pricing error. Loyalty and credit arrive with the question
+ *     of what they are allowed to move.
  */
 public record CreateSaleRequest(
         @NotNull UUID clientUuid,
@@ -51,7 +58,8 @@ public record CreateSaleRequest(
         @NotEmpty @Valid List<Line> lines,
         @NotNull Long roundingAdjustmentMinor,
         @NotNull @Min(0) Long changeMinor,
-        @NotEmpty @Valid List<Tender> tenders) {
+        @NotEmpty @Valid List<Tender> tenders,
+        UUID customerClientUuid) {
 
     /**
      * @param taxMode this line's own tax treatment, or {@code null} to inherit the sale's

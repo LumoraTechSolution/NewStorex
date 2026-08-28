@@ -3,6 +3,7 @@ package com.lumora.pos.sale;
 import com.lumora.pos.invoice.InvoiceNumberAllocator;
 import com.lumora.pos.outbox.OutboxWriter;
 import com.lumora.pos.shift.ShiftService;
+import com.lumora.pos.customer.CustomerService;
 import com.lumora.pos.shop.LocalShop;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -36,18 +37,21 @@ public class SaleService {
     private final InvoiceNumberAllocator invoiceNumbers;
     private final LocalShop shop;
     private final ShiftService shifts;
+    private final CustomerService customers;
 
     public SaleService(
             JdbcTemplate jdbc,
             OutboxWriter outbox,
             InvoiceNumberAllocator invoiceNumbers,
             LocalShop shop,
-            ShiftService shifts) {
+            ShiftService shifts,
+            CustomerService customers) {
         this.jdbc = jdbc;
         this.outbox = outbox;
         this.invoiceNumbers = invoiceNumbers;
         this.shop = shop;
         this.shifts = shifts;
+        this.customers = customers;
     }
 
     @Transactional
@@ -68,8 +72,11 @@ public class SaleService {
         // rejects rather than attaching nothing — and it costs the offline guarantee nothing,
         // because opening a shift is entirely local. §A is about the network being on the
         // critical path of nothing, not about the till having no workflow.
-        long shiftId =
-                shifts.requireOpenShiftId(branch.tenantId(), branch.id(), request.terminalCode());
+        // The shift also says who is on the till (M3-08): the person who counted the float
+        // authenticated to open it, and every sale until it closes is theirs.
+        ShiftService.OpenShift shift =
+                shifts.requireOpenShift(branch.tenantId(), branch.id(), request.terminalCode());
+        long shiftId = shift.id();
 
         Instant soldAt = request.soldAt() != null ? request.soldAt() : Instant.now();
         String invoiceNumber =
@@ -83,9 +90,19 @@ public class SaleService {
         // Letting it roll back is the only correct recovery: the terminal retries, and the
         // findByClientUuid at the top of this method returns the winner's sale. Found while
         // building M2-01, which needed the same shape and could not make it work either.
-        long saleId = insertSale(request, branch, invoiceNumber, soldAt, shiftId);
+        // Resolved before the insert rather than trusted as an id: the terminal knows the customer
+        // by client_uuid (it is what the search returned) and the FK needs the local id. Resolving
+        // it here also refuses a deactivated customer, so "no longer active" cannot be attached to
+        // a sale by a till whose list is a few minutes stale.
+        Long customerId =
+                request.customerClientUuid() == null
+                        ? null
+                        : customers.idForClientUuid(branch.tenantId(), request.customerClientUuid());
 
-        LinesAndMovements written = insertLinesAndMovements(request, branch, saleId);
+        long saleId = insertSale(request, branch, invoiceNumber, soldAt, shiftId, customerId);
+
+        LinesAndMovements written =
+                insertLinesAndMovements(request, branch, saleId, shift.operatorId());
         List<Map<String, Object>> tenderPayloads = insertPayments(request, saleId);
         outbox.enqueue(
                 branch.tenantId(),
@@ -200,15 +217,16 @@ public class SaleService {
             LocalShop.Branch branch,
             String invoiceNumber,
             Instant soldAt,
-            long shiftId) {
+            long shiftId,
+            Long customerId) {
         return jdbc.queryForObject(
                 """
                 INSERT INTO sales (
                     client_uuid, tenant_id, branch_id, terminal_code, invoice_number,
                     subtotal_minor, discount_minor, tax_minor, total_minor,
                     tax_mode, tax_rate_bp, sold_at, rounding_adjustment_minor, change_minor,
-                    shift_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    shift_id, customer_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -226,7 +244,8 @@ public class SaleService {
                 Timestamp.from(soldAt),
                 request.roundingAdjustmentMinor(),
                 request.changeMinor(),
-                shiftId);
+                shiftId,
+                customerId);
     }
 
     /** One row per tender line, in the same order the cashier entered them (M1-11). */
@@ -254,7 +273,7 @@ public class SaleService {
     }
 
     private LinesAndMovements insertLinesAndMovements(
-            CreateSaleRequest request, LocalShop.Branch branch, long saleId) {
+            CreateSaleRequest request, LocalShop.Branch branch, long saleId, long operatorId) {
 
         List<Map<String, Object>> payloads = new java.util.ArrayList<>();
         List<Map<String, Object>> movements = new java.util.ArrayList<>();
@@ -311,7 +330,7 @@ public class SaleService {
                     productId,
                     -line.qty(),
                     saleId,
-                    LocalShop.SEEDED_OPERATOR_ID);
+                    operatorId);
 
             Map<String, Object> movement = new LinkedHashMap<>();
             movement.put("clientUuid", movementUuid);
@@ -359,6 +378,13 @@ public class SaleService {
         payload.put("totalMinor", request.totalMinor());
         payload.put("roundingAdjustmentMinor", request.roundingAdjustmentMinor());
         payload.put("changeMinor", request.changeMinor());
+        // M3-11/M3-12. The uuid, not the local id — the cloud resolves it against a customers row
+        // that may not have arrived yet, exactly as it does for the shift.
+        payload.put(
+                "customerClientUuid",
+                request.customerClientUuid() == null
+                        ? null
+                        : request.customerClientUuid().toString());
         payload.put("lines", lines);
         payload.put("movements", movements);
         payload.put("tenders", tenders);

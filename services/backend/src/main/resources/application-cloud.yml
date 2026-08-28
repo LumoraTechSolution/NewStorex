@@ -13,3 +13,27 @@ spring:
 
   flyway:
     locations: classpath:db/migration/common,classpath:db/migration/cloud
+
+lumora:
+  console:
+    # Which origins may read this API from a browser. An explicit list, never a wildcard: this
+    # endpoint answers with a shop's takings. The production value is the console's Vercel domain
+    # and is set from the environment (M4-10).
+    allowed-origins: ${LUMORA_CONSOLE_ORIGINS:http://localhost:3001,http://127.0.0.1:3001}
+    # How long an owner stays signed in. Longer than the till's fifteen minutes on purpose — see
+    # the V208 header: a phone in a pocket is not a shared screen on a shop floor.
+    session-ttl: ${LUMORA_CONSOLE_SESSION_TTL:P7D}
+
+  platform:
+    # Lumora staff sessions (M4-08). Eight hours against the owner's seven days, deliberately: a
+    # console session leaks one shop's takings, a platform session can suspend every shop on the
+    # system. A working day is long enough not to interrupt anyone and short enough that a laptop
+    # left somewhere is not a standing key.
+    session-ttl: ${LUMORA_PLATFORM_SESSION_TTL:PT8H}
+    # Creates the first platform admin, once, on a database that has none — everything in M4-08 is
+    # done by an admin, including making admins, so something outside that loop has to start it.
+    # The generated password is logged once at startup and stored only as a BCrypt hash. Setting
+    # this again later does nothing: the guard is an empty table, not an absent setting, so leaving
+    # it in an environment file is not a standing back door. See PlatformBootstrap.
+    bootstrap-email: ${LUMORA_PLATFORM_BOOTSTRAP_EMAIL:}
+    bootstrap-name: ${LUMORA_PLATFORM_BOOTSTRAP_NAME:Lumora}

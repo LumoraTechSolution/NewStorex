@@ -17,7 +17,9 @@ import {
   useDenominationKeys,
   type DenominationCount,
 } from '@/components/DenominationCounter';
+import { OperatorPrompt } from '@/components/OperatorPrompt';
 import type { ShiftStatus } from '@/lib/useShift';
+import { useOperator } from '@/lib/useOperator';
 
 /**
  * Cash up (M2-01 … M2-05, M2-11) — everything behind F10.
@@ -28,6 +30,14 @@ import type { ShiftStatus } from '@/lib/useShift';
  * share a shell because they share a keyboard: this is a modal, the caller has gated the till's
  * global F-keys off, and having one listener rather than four is what keeps Escape and F12 meaning
  * the same thing on every screen.
+ *
+ * ## Signing is its own screen, not a field on the count
+ *
+ * `SIGN` follows both `OPEN` and `CLOSE` (M3-08). It is separate for a mechanical reason and a
+ * better one. Mechanically, the denomination counter owns the digit keys, so a PIN field sharing
+ * that screen would be typing into the notes column. The better reason is that it puts the name
+ * after the count rather than beside it: whoever signs is signing for a figure that is already
+ * fixed, which is the same argument the blind count itself rests on.
  *
  * ## The close screen is where the milestone lives
  *
@@ -40,7 +50,7 @@ import type { ShiftStatus } from '@/lib/useShift';
  * count being blind, and it is worth paying: the alternative is telling the counter the target
  * before they count.
  */
-type Screen = 'OPEN' | 'MENU' | 'MOVEMENT' | 'CLOSE';
+type Screen = 'OPEN' | 'MENU' | 'MOVEMENT' | 'CLOSE' | 'SIGN';
 
 const MOVEMENT_KINDS: readonly { kind: CashMovementKind; label: string }[] = [
   { kind: 'DROP', label: 'Drop to safe' },
@@ -106,6 +116,11 @@ export function ShiftOverlay({
 
   const denominationKeys = useDenominationKeys(counts, setCounts, selected, setSelected);
 
+  // M3-08. Who is answerable for this drawer. `signing` remembers which action the SIGN
+  // screen is about to perform, so one screen serves both open and close.
+  const operator = useOperator();
+  const [signing, setSigning] = useState<'OPEN' | 'CLOSE'>('OPEN');
+
   const goTo = useCallback((next: Screen) => {
     setScreen(next);
     setCounts([]);
@@ -130,6 +145,8 @@ export function ShiftOverlay({
           clientUuid: crypto.randomUUID(),
           branchCode,
           terminalCode,
+          operatorCode: operator.code,
+          operatorPin: operator.pin,
           openingFloatMinor: countedTotalMinor(counts),
           openingCount: counts,
         }),
@@ -143,7 +160,7 @@ export function ShiftOverlay({
     } finally {
       setBusy(false);
     }
-  }, [branchCode, busy, counts, onCancel, onDone, terminalCode]);
+  }, [branchCode, busy, counts, onCancel, onDone, operator, terminalCode]);
 
   const closeShift = useCallback(async () => {
     if (busy || counts.length === 0 || !status?.shiftId) return;
@@ -154,6 +171,8 @@ export function ShiftOverlay({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          operatorCode: operator.code,
+          operatorPin: operator.pin,
           countedCashMinor: countedTotalMinor(counts),
           closingCount: counts,
           varianceReason,
@@ -181,7 +200,7 @@ export function ShiftOverlay({
     } finally {
       setBusy(false);
     }
-  }, [busy, counts, onCancel, onClosed, onDone, status, varianceReason]);
+  }, [busy, counts, onCancel, onClosed, onDone, operator, status, varianceReason]);
 
   const recordMovement = useCallback(async () => {
     const amountMinor = amountBuffer === '' ? 0 : Number(amountBuffer);
@@ -222,7 +241,12 @@ export function ShiftOverlay({
     function onKey(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.preventDefault();
-        if (screen === 'MOVEMENT' || (screen === 'CLOSE' && status?.open)) {
+        if (screen === 'SIGN') {
+          // Back to the count exactly as it was. A mistyped code must not cost somebody a
+          // drawer they have already counted note by note.
+          operator.reset();
+          setScreen(signing === 'OPEN' ? 'OPEN' : 'CLOSE');
+        } else if (screen === 'MOVEMENT' || (screen === 'CLOSE' && status?.open)) {
           goTo('MENU');
         } else {
           onCancel();
@@ -244,7 +268,13 @@ export function ShiftOverlay({
       if (screen === 'OPEN' || screen === 'CLOSE') {
         if (event.key === 'F12') {
           event.preventDefault();
-          void (screen === 'OPEN' ? openShift() : closeShift());
+          if (counts.length === 0) return;
+          // The count is fixed from here. Nothing on the SIGN screen can change it, which is
+          // what makes signing mean anything.
+          setSigning(screen === 'OPEN' ? 'OPEN' : 'CLOSE');
+          setError(null);
+          operator.reset();
+          setScreen('SIGN');
           return;
         }
         // Only once the backend has asked for one. Before that there is nothing to attribute,
@@ -259,6 +289,21 @@ export function ShiftOverlay({
           }
         }
         if (denominationKeys(event)) event.preventDefault();
+        return;
+      }
+
+      if (screen === 'SIGN') {
+        if (event.key === 'Enter' && operator.field === 'CODE') {
+          event.preventDefault();
+          operator.advance();
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'F12') {
+          event.preventDefault();
+          if (operator.ready) void (signing === 'OPEN' ? openShift() : closeShift());
+          return;
+        }
+        operator.onKey(event);
         return;
       }
 
@@ -299,15 +344,18 @@ export function ShiftOverlay({
     return () => document.removeEventListener('keydown', onKey, true);
   }, [
     closeShift,
+    counts,
     denominationKeys,
     goTo,
     movementKind,
     movementReason,
     onCancel,
     openShift,
+    operator,
     reasonRequired,
     recordMovement,
     screen,
+    signing,
     status,
   ]);
 
@@ -357,6 +405,39 @@ export function ShiftOverlay({
           </>
         )}
 
+        {screen === 'SIGN' && (
+          <>
+            <header>
+              <h2 className="text-ink-3 text-xs uppercase tracking-wider">
+                {signing === 'OPEN'
+                  ? 'Open shift — who is on the till?'
+                  : 'Close shift — sign the count'}
+              </h2>
+            </header>
+            <OperatorPrompt
+              operator={operator}
+              label={
+                signing === 'OPEN'
+                  ? 'Every sale on this shift is recorded against you.'
+                  : 'You are signing for the count you just entered.'
+              }
+            />
+            {/*
+              The counted total, and deliberately nothing to compare it against. On a close this
+              screen is one keypress from submitting, and showing the expected figure here would
+              undo M2-02 at the last possible moment.
+            */}
+            <div className="flex items-baseline justify-between">
+              <span className="text-ink-3 text-sm">
+                {signing === 'OPEN' ? 'Opening float' : 'Counted'}
+              </span>
+              <span className="lum-money text-ink text-2xl font-semibold">
+                {formatMinor(countedTotalMinor(counts))}
+              </span>
+            </div>
+          </>
+        )}
+
         {screen === 'MOVEMENT' && (
           <Movement kind={movementKind} reason={movementReason} amountBuffer={amountBuffer} />
         )}
@@ -381,9 +462,19 @@ export function ShiftOverlay({
               <span>digits count</span>
               <span>Enter next</span>
               <span className={counts.length > 0 ? 'text-accent font-semibold' : ''}>
-                F12 {busy ? 'working…' : screen === 'OPEN' ? 'open shift' : 'close shift'}
+                F12 sign &amp; {screen === 'OPEN' ? 'open' : 'close'}
               </span>
               <span>Esc back</span>
+            </>
+          )}
+          {screen === 'SIGN' && (
+            <>
+              <span>user code, then PIN</span>
+              <span>Tab switch</span>
+              <span className={operator.ready ? 'text-accent font-semibold' : ''}>
+                Enter {busy ? 'working…' : signing === 'OPEN' ? 'open shift' : 'close shift'}
+              </span>
+              <span>Esc back to the count</span>
             </>
           )}
           {screen === 'MOVEMENT' && (

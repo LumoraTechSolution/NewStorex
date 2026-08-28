@@ -26,3 +26,7 @@ lumora:
     # Tests drive the drain by hand. A background timer firing mid-assertion would make
     # every offline test flaky in a way that looks like a real bug.
     enabled: false
+    # Any non-blank value. Since M4-01 a till with no token does not push at all, and the
+    # drain tests are about the outbox rather than about being unactivated — the refusal
+    # itself is asserted in SyncWorkerTest with the property cleared.
+    token: lum_test-token

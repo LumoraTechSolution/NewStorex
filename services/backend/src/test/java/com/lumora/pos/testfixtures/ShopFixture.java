@@ -1,6 +1,8 @@
 package com.lumora.pos.testfixtures;
 
-import com.lumora.pos.settings.TenantSettingsService;
+import com.lumora.pos.user.Role;
+import com.lumora.pos.user.UserService;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -15,16 +17,26 @@ import org.springframework.stereotype.Component;
  * another — the {@code ux_shifts_one_open_per_terminal} index is scoped to (tenant, branch,
  * terminal), so a fresh branch is a fresh terminal.
  *
- * <p>A component rather than a static helper so it can use {@link TenantSettingsService} to hash a
- * manager PIN. Writing a hardcoded BCrypt string into the fixture would tie the tests to a
- * particular cost factor and to whatever produced the constant, and would silently stop testing
- * anything the day the encoder changed.
+ * <p>A component rather than a static helper so it can use {@link UserService} to hash the PINs.
+ * Writing a hardcoded BCrypt string into the fixture would tie the tests to a particular cost
+ * factor and to whatever produced the constant, and would silently stop testing anything the day
+ * the encoder changed.
+ *
+ * <p>Both a manager and a cashier are seeded (M3-08). The cashier exists so that every permission
+ * gate has something that fails it: a fixture with only privileged users lets a refusal path go
+ * untested while every assertion still passes.
  */
 @Component
 public class ShopFixture {
 
-    /** The PIN every test uses. Matched against the hash this fixture actually produces. */
+    /** The PIN every seeded user shares. Matched against the hash this fixture actually produces. */
     public static final String MANAGER_PIN = "4821";
+
+    /** Holds AUTHORISE_REFUND and RUN_SHIFT. The code most tests act as. */
+    public static final String MANAGER_CODE = "MGR";
+
+    /** Holds neither. The user that permission-gate tests expect to be refused. */
+    public static final String CASHIER_CODE = "TILL";
 
     private static final AtomicInteger UNIQUE = new AtomicInteger();
 
@@ -37,11 +49,11 @@ public class ShopFixture {
     public static final UUID SOLE_TENANT = UUID.fromString("00000000-0000-4000-8000-0000000000ff");
 
     private final JdbcTemplate jdbc;
-    private final TenantSettingsService settings;
+    private final UserService users;
 
-    public ShopFixture(JdbcTemplate jdbc, TenantSettingsService settings) {
+    public ShopFixture(JdbcTemplate jdbc, UserService users) {
         this.jdbc = jdbc;
-        this.settings = settings;
+        this.users = users;
     }
 
     public Shop seed() {
@@ -74,9 +86,26 @@ public class ShopFixture {
         // checked against a line whose tax is zero.
         UUID exemptUuid = insertProduct(tenantId, n, "Bread 450g", 25_000, 0, "-X");
 
-        settings.setManagerPin(tenantId, MANAGER_PIN);
+        // Once per tenant, not once per branch: user codes are unique per tenant and every
+        // seed() call shares the one tenant a desktop database is allowed.
+        long managerId = ensureUser(tenantId, MANAGER_CODE, "Fixture Manager", Role.MANAGER);
+        long cashierId = ensureUser(tenantId, CASHIER_CODE, "Fixture Cashier", Role.CASHIER);
 
-        return new Shop(tenantId, branchId, branchCode, productUuid, exemptUuid);
+        return new Shop(
+                tenantId, branchId, branchCode, productUuid, exemptUuid, managerId, cashierId);
+    }
+
+    private long ensureUser(long tenantId, String code, String name, Role role) {
+        List<Long> existing =
+                jdbc.queryForList(
+                        "SELECT id FROM users WHERE tenant_id = ? AND code = ?",
+                        Long.class,
+                        tenantId,
+                        code);
+        if (!existing.isEmpty()) {
+            return existing.get(0);
+        }
+        return users.create(tenantId, UUID.randomUUID(), code, name, role, MANAGER_PIN).id();
     }
 
     private UUID insertProduct(long tenantId, int n, String name, long priceMinor, int rateBp, String suffix) {
@@ -95,5 +124,12 @@ public class ShopFixture {
         return uuid;
     }
 
-    public record Shop(long tenantId, long branchId, String branchCode, UUID productUuid, UUID exemptUuid) {}
+    public record Shop(
+            long tenantId,
+            long branchId,
+            String branchCode,
+            UUID productUuid,
+            UUID exemptUuid,
+            long managerId,
+            long cashierId) {}
 }

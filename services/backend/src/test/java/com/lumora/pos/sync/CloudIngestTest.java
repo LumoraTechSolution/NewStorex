@@ -7,7 +7,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import com.lumora.pos.cloud.TenantCredentialService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -27,7 +29,6 @@ import org.springframework.test.context.TestPropertySource;
         properties = "spring.datasource.url=jdbc:postgresql://127.0.0.1:5444/lumora_test_cloud")
 class CloudIngestTest {
 
-    private static final UUID TENANT = UUID.fromString("00000000-0000-4000-8000-0000000000aa");
 
     /**
      * Its own product, not the one {@link #saleItem} uses: the movement tests assert on a running
@@ -36,14 +37,27 @@ class CloudIngestTest {
     private static final UUID PRODUCT = UUID.fromString("00000000-0000-4000-8000-000000000155");
 
     @Autowired SyncIngestService ingest;
+    @Autowired TenantCredentialService credentials;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper objectMapper;
+
+    /**
+     * Provisioned per test rather than shared (M4-01). A tenant can no longer create itself by
+     * pushing, so every test needs one to exist first — and giving each its own is what keeps a
+     * test asserting on a running total from reading rows the previous test left behind.
+     */
+    private long tenantId;
+
+    @BeforeEach
+    void provisionTenant() {
+        tenantId = credentials.provision("Kandy Stores", "Till 1").tenantId();
+    }
 
     @Test
     void aBatchLandsAsASaleWithItsLines() {
         UUID saleUuid = UUID.randomUUID();
 
-        SyncBatchResult result = ingest.ingest(batchWith(saleUuid, "KND-T1-000001"));
+        SyncBatchResult result = ingest.ingest(tenantId, batchWith(saleUuid, "KND-T1-000001"));
 
         assertThat(result.accepted()).containsExactly(saleUuid);
         assertThat(result.rejected()).isEmpty();
@@ -66,12 +80,12 @@ class CloudIngestTest {
         UUID saleUuid = UUID.randomUUID();
         SyncBatch batch = batchWith(saleUuid, "KND-T1-000002");
 
-        ingest.ingest(batch);
+        ingest.ingest(tenantId, batch);
         int salesAfterFirst = count("SELECT count(*) FROM sales");
         int itemsAfterFirst = count("SELECT count(*) FROM sale_items");
 
-        SyncBatchResult second = ingest.ingest(batch);
-        SyncBatchResult third = ingest.ingest(batch);
+        SyncBatchResult second = ingest.ingest(tenantId, batch);
+        SyncBatchResult third = ingest.ingest(tenantId, batch);
 
         assertThat(second.accepted()).containsExactly(saleUuid);
         assertThat(third.accepted()).containsExactly(saleUuid);
@@ -87,15 +101,12 @@ class CloudIngestTest {
         UUID alsoGood = UUID.randomUUID();
 
         SyncBatch batch =
-                new SyncBatch(
-                        TENANT,
-                        "Kandy Stores",
-                        List.of(
+                new SyncBatch(List.of(
                                 saleItem(good, "KND-T1-000010"),
                                 new SyncBatch.Item("sale", bad, json("{\"branchCode\":\"KND\"}")),
                                 saleItem(alsoGood, "KND-T1-000011")));
 
-        SyncBatchResult result = ingest.ingest(batch);
+        SyncBatchResult result = ingest.ingest(tenantId, batch);
 
         assertThat(result.accepted()).containsExactly(good, alsoGood);
         assertThat(result.rejected()).hasSize(1);
@@ -111,12 +122,9 @@ class CloudIngestTest {
     void anUnknownAggregateKindIsRejectedNotCrashed() {
         UUID id = UUID.randomUUID();
         SyncBatch batch =
-                new SyncBatch(
-                        TENANT,
-                        "Kandy Stores",
-                        List.of(new SyncBatch.Item("loyalty_adjustment", id, json("{}"))));
+                new SyncBatch(List.of(new SyncBatch.Item("loyalty_adjustment", id, json("{}"))));
 
-        SyncBatchResult result = ingest.ingest(batch);
+        SyncBatchResult result = ingest.ingest(tenantId, batch);
 
         assertThat(result.accepted()).isEmpty();
         assertThat(result.rejected().get(0).reason()).contains("Unsupported aggregate kind");
@@ -160,7 +168,7 @@ class CloudIngestTest {
                         .formatted(saleUuid);
 
         SyncBatchResult result =
-                ingest.ingest(new SyncBatch(TENANT, "Kandy Stores", List.of(new SyncBatch.Item("sale", saleUuid, json(payload)))));
+                ingest.ingest(tenantId, new SyncBatch(List.of(new SyncBatch.Item("sale", saleUuid, json(payload)))));
 
         assertThat(result.accepted()).containsExactly(saleUuid);
 
@@ -183,7 +191,7 @@ class CloudIngestTest {
         UUID movementUuid = UUID.randomUUID();
 
         SyncBatchResult result =
-                ingest.ingest(batchWithMovements(saleUuid, "KND-T1-000040", movementUuid));
+                ingest.ingest(tenantId, batchWithMovements(saleUuid, "KND-T1-000040", movementUuid));
 
         assertThat(result.accepted()).containsExactly(saleUuid);
 
@@ -211,11 +219,11 @@ class CloudIngestTest {
         UUID movementUuid = UUID.randomUUID();
         SyncBatch batch = batchWithMovements(saleUuid, "KND-T1-000041", movementUuid);
 
-        ingest.ingest(batch);
+        ingest.ingest(tenantId, batch);
         int onHandAfterFirst = onHandOf(PRODUCT);
 
-        ingest.ingest(batch);
-        ingest.ingest(batch);
+        ingest.ingest(tenantId, batch);
+        ingest.ingest(tenantId, batch);
 
         assertThat(count("SELECT count(*) FROM stock_movements WHERE client_uuid = ?", movementUuid))
                 .isEqualTo(1);
@@ -231,7 +239,7 @@ class CloudIngestTest {
     void aSaleWithoutMovementsStillIngests() {
         UUID saleUuid = UUID.randomUUID();
 
-        SyncBatchResult result = ingest.ingest(batchWith(saleUuid, "KND-T1-000042"));
+        SyncBatchResult result = ingest.ingest(tenantId, batchWith(saleUuid, "KND-T1-000042"));
 
         assertThat(result.accepted()).containsExactly(saleUuid);
         assertThat(result.rejected()).isEmpty();
@@ -252,10 +260,34 @@ class CloudIngestTest {
         assertThat(levelColumns).isZero();
     }
 
+    /**
+     * The inverse of what this asserted until M4-01, and the point of the change.
+     *
+     * <p>A tenant used to be created on first sight from the batch's own {@code tenantClientUuid},
+     * which meant the caller chose which shop it was writing into. Pushing now cannot create a
+     * tenant at all — there is no tenant in the payload to create one from, and the only tenant a
+     * request can touch is the one its credential resolves to.
+     */
     @Test
-    void theTenantIsCreatedOnFirstSight() {
-        ingest.ingest(batchWith(UUID.randomUUID(), "KND-T1-000020"));
-        assertThat(count("SELECT count(*) FROM tenants WHERE client_uuid = ?", TENANT)).isEqualTo(1);
+    void pushingCannotBringATenantIntoExistence() {
+        int before = count("SELECT count(*) FROM tenants");
+
+        ingest.ingest(tenantId, batchWith(UUID.randomUUID(), "KND-T1-000020"));
+
+        assertThat(count("SELECT count(*) FROM tenants")).isEqualTo(before);
+    }
+
+    /** Ingest writes against the tenant it was handed, and no other. */
+    @Test
+    void aSaleLandsUnderTheTenantTheCallerWasAuthenticatedAs() {
+        UUID saleUuid = UUID.randomUUID();
+        long other = credentials.provision("Galle Stores", "Till 1").tenantId();
+
+        ingest.ingest(tenantId, batchWith(saleUuid, "KND-T1-000021"));
+
+        assertThat(count("SELECT count(*) FROM sales WHERE client_uuid = ? AND tenant_id = ?", saleUuid, tenantId))
+                .isEqualTo(1);
+        assertThat(count("SELECT count(*) FROM sales WHERE tenant_id = ?", other)).isZero();
     }
 
     // -------------------------------------------------------------------- helpers
@@ -266,7 +298,7 @@ class CloudIngestTest {
     void aMixedRateSaleKeepsEachLineRateAcrossTheWire() {
         UUID saleUuid = UUID.randomUUID();
 
-        ingest.ingest(mixedRateBatch(saleUuid, "KND-T1-000200"));
+        ingest.ingest(tenantId, mixedRateBatch(saleUuid, "KND-T1-000200"));
 
         List<Map<String, Object>> items =
                 jdbc.queryForList(
@@ -301,7 +333,7 @@ class CloudIngestTest {
     void aSaleFromATillWithoutPerLineRatesInheritsTheSaleRate() {
         UUID saleUuid = UUID.randomUUID();
 
-        ingest.ingest(batchWith(saleUuid, "KND-T1-000201"));
+        ingest.ingest(tenantId, batchWith(saleUuid, "KND-T1-000201"));
 
         Map<String, Object> item =
                 jdbc.queryForMap(
@@ -343,12 +375,11 @@ class CloudIngestTest {
                 }
                 """
                         .formatted(saleUuid, invoiceNumber, PRODUCT, PRODUCT);
-        return new SyncBatch(
-                TENANT, "Kandy Stores", List.of(new SyncBatch.Item("sale", saleUuid, json(payload))));
+        return new SyncBatch(List.of(new SyncBatch.Item("sale", saleUuid, json(payload))));
     }
 
     private SyncBatch batchWith(UUID saleUuid, String invoiceNumber) {
-        return new SyncBatch(TENANT, "Kandy Stores", List.of(saleItem(saleUuid, invoiceNumber)));
+        return new SyncBatch(List.of(saleItem(saleUuid, invoiceNumber)));
     }
 
     /** The M1-15 shape: the same sale, now carrying the movement its line caused. */
@@ -382,8 +413,7 @@ class CloudIngestTest {
                 }
                 """
                         .formatted(saleUuid, invoiceNumber, PRODUCT, movementUuid, PRODUCT);
-        return new SyncBatch(
-                TENANT, "Kandy Stores", List.of(new SyncBatch.Item("sale", saleUuid, json(payload))));
+        return new SyncBatch(List.of(new SyncBatch.Item("sale", saleUuid, json(payload))));
     }
 
     private int onHandOf(UUID productClientUuid) {

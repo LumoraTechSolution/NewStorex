@@ -16,3 +16,33 @@ body {
   /* The terminal is a fixed appliance: no page scrolling during a sale (ROADMAP M1-07). */
   overflow: hidden;
 }
+
+/*
+ * The caret on whichever operator field is taking keystrokes (M3-08).
+ *
+ * The till has no real <input> anywhere — a focused input is something a barcode gun can type
+ * into, and the appliance handles keys at the document level instead. That costs the browser's
+ * own caret, so this draws one. It blinks because a static block reads as decoration; the blink
+ * is what says "this field is live".
+ *
+ * Honours prefers-reduced-motion: the caret still shows, it simply stops moving.
+ */
+.lum-caret {
+  animation: lum-caret-blink 1.06s step-end infinite;
+}
+
+@keyframes lum-caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lum-caret {
+    animation: none;
+  }
+}

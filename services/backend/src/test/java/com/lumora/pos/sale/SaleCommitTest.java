@@ -235,7 +235,7 @@ class SaleCommitTest {
                         List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", 99999L)));
+                        List.of(new CreateSaleRequest.Tender("CASH", 99999L)), null);
 
         assertThatThrownBy(() -> sales.commit(wrong))
                 .isInstanceOf(SaleRejectedException.class)
@@ -267,7 +267,7 @@ class SaleCommitTest {
                         0L,
                         List.of(
                                 new CreateSaleRequest.Tender("CARD", 60000L),
-                                new CreateSaleRequest.Tender("CASH", 30000L)));
+                                new CreateSaleRequest.Tender("CASH", 30000L)), null);
 
         SaleResponse response = sales.commit(request);
 
@@ -304,7 +304,7 @@ class SaleCommitTest {
                                         fixture.productUuid(), 1, lineTotal, 0L, lineTotal * 1800 / 11800, lineTotal)),
                         0L,
                         55000L, // customer handed over 1000.00 against a 450.00 sale
-                        List.of(new CreateSaleRequest.Tender("CASH", 100000L)));
+                        List.of(new CreateSaleRequest.Tender("CASH", 100000L)), null);
 
         SaleResponse response = sales.commit(request);
 
@@ -334,7 +334,7 @@ class SaleCommitTest {
                         List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", 30000L))); // short by 150.00
+                        List.of(new CreateSaleRequest.Tender("CASH", 30000L)), null); // short by 150.00
 
         assertThatThrownBy(() -> sales.commit(request))
                 .isInstanceOf(SaleRejectedException.class)
@@ -359,7 +359,7 @@ class SaleCommitTest {
                         List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)),
                         0L,
                         10000L, // a card cannot hand back change
-                        List.of(new CreateSaleRequest.Tender("CARD", 55000L)));
+                        List.of(new CreateSaleRequest.Tender("CARD", 55000L)), null);
 
         assertThatThrownBy(() -> sales.commit(request))
                 .isInstanceOf(SaleRejectedException.class)
@@ -405,7 +405,7 @@ class SaleCommitTest {
                         List.of(new CreateSaleRequest.Line(ghost, 1, 45000L, 0L, 6864L, 45000L)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)));
+                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)), null);
 
         assertThatThrownBy(() -> sales.commit(request))
                 .isInstanceOf(SaleRejectedException.class)
@@ -432,7 +432,7 @@ class SaleCommitTest {
                                 fixture.productUuid(), qty, unitPrice, 0L, lineTotal * 1800 / 11800, lineTotal)),
                 0L,
                 0L,
-                List.of(new CreateSaleRequest.Tender("CASH", lineTotal)));
+                List.of(new CreateSaleRequest.Tender("CASH", lineTotal)), null);
     }
 
     /** Two lines, two products, different quantities — so a movement cannot pass by coincidence. */
@@ -463,7 +463,7 @@ class SaleCommitTest {
                                 secondProduct, 3, 12000L, 0L, secondTotal * 1800 / 11800, secondTotal)),
                 0L,
                 0L,
-                List.of(new CreateSaleRequest.Tender("CASH", subtotal)));
+                List.of(new CreateSaleRequest.Tender("CASH", subtotal)), null);
     }
 
     private CreateSaleRequest requestOn(UUID saleUuid, Fixture fixture, String terminalCode) {
@@ -482,7 +482,7 @@ class SaleCommitTest {
                 base.lines(),
                 base.roundingAdjustmentMinor(),
                 base.changeMinor(),
-                base.tenders());
+                base.tenders(), null);
     }
 
     // ------------------------------------------------------------------ M1-18: per-line rates
@@ -517,7 +517,7 @@ class SaleCommitTest {
                                         fixture.productUuid(), 1, 45000L, 0L, teaTax, teaTotal, "INCLUSIVE", 1800)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", breadTotal + teaTotal)));
+                        List.of(new CreateSaleRequest.Tender("CASH", breadTotal + teaTotal)), null);
 
         SaleResponse response = sales.commit(request);
 
@@ -577,7 +577,7 @@ class SaleCommitTest {
                                         fixture.productUuid(), 1, 45000L, 0L, teaTax, 45000L, "INCLUSIVE", 1800)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", 95000L))));
+                        List.of(new CreateSaleRequest.Tender("CASH", 95000L)), null));
 
         // Same reasoning as M1-15's movement uuids: what the cloud stores has to be what the
         // till stored. A rate re-derived at the far end from the sale's default would put 18%
@@ -625,7 +625,7 @@ class SaleCommitTest {
                         List.of(new CreateSaleRequest.Line(fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)));
+                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)), null);
 
         assertThatThrownBy(() -> sales.commit(wrong))
                 .isInstanceOf(SaleRejectedException.class)
@@ -658,7 +658,7 @@ class SaleCommitTest {
                                 new CreateSaleRequest.Line(fixture.productUuid(), 1, 44000L, 0L, 0L, 44000L)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)));
+                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)), null);
 
         assertThatThrownBy(() -> sales.commit(wrong))
                 .isInstanceOf(SaleRejectedException.class)
@@ -689,7 +689,7 @@ class SaleCommitTest {
                                         fixture.productUuid(), 1, 45000L, 0L, 6864L, 45000L, null, 1800)),
                         0L,
                         0L,
-                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)));
+                        List.of(new CreateSaleRequest.Tender("CASH", 45000L)), null);
 
         assertThatThrownBy(() -> sales.commit(wrong))
                 .isInstanceOf(SaleRejectedException.class)
@@ -741,9 +741,10 @@ class SaleCommitTest {
     void aSaleIsRefusedWhenNoShiftIsOpen() {
         Fixture fixture = seed();
         jdbc.update(
-                "UPDATE shifts SET status = 'CLOSED', closed_at = now(), closed_by = 1,"
+                "UPDATE shifts SET status = 'CLOSED', closed_at = now(), closed_by = ?,"
                         + " counted_cash_minor = 0, expected_cash_minor = 0, variance_minor = 0"
                         + " WHERE tenant_id = ? AND terminal_code = 'T1' AND status = 'OPEN'",
+                fixture.operatorId(),
                 fixture.tenantId());
 
         assertThatThrownBy(() -> sales.commit(request(UUID.randomUUID(), fixture, 1, 45000)))
@@ -774,14 +775,42 @@ class SaleCommitTest {
                 """
                 INSERT INTO shifts (client_uuid, tenant_id, branch_id, terminal_code, status,
                                     opened_by, opening_float_minor)
-                SELECT ?, ?, id, ?, 'OPEN', 1, 500000
+                SELECT ?, ?, id, ?, 'OPEN', ?, 500000
                   FROM branches WHERE tenant_id = ? AND code = ?
                 """,
                 UUID.randomUUID(),
                 fixture.tenantId(),
                 terminalCode,
+                fixture.operatorId(),
                 fixture.tenantId(),
                 fixture.branchCode());
+    }
+
+    /**
+     * The one user this class's shifts are opened by, created on first use.
+     *
+     * <p>Its own rather than {@code ShopFixture}'s, because this class deliberately builds its
+     * fixture by hand — the sale path is what is under test and a shared helper that grows a
+     * feature would quietly change what these tests exercise.
+     */
+    private long operator(long tenantId) {
+        List<Long> existing =
+                jdbc.queryForList(
+                        "SELECT id FROM users WHERE tenant_id = ? AND code = 'SALETEST'",
+                        Long.class,
+                        tenantId);
+        if (!existing.isEmpty()) {
+            return existing.get(0);
+        }
+        return jdbc.queryForObject(
+                """
+                INSERT INTO users (client_uuid, tenant_id, code, display_name, role, pin_hash)
+                VALUES (?, ?, 'SALETEST', 'Sale Test Operator', 'CASHIER', 'not-a-real-hash')
+                RETURNING id
+                """,
+                Long.class,
+                UUID.randomUUID(),
+                tenantId);
     }
 
     private Fixture seed() {
@@ -817,19 +846,22 @@ class SaleCommitTest {
 
         // M2-01. The till does not sell unreconciled, so every fixture opens a shift on T1.
         // The rejection when one is not open is asserted on its own below.
+        long operatorId = operator(tenantId);
+
         jdbc.update(
                 """
                 INSERT INTO shifts (client_uuid, tenant_id, branch_id, terminal_code, status,
                                     opened_by, opening_float_minor)
-                SELECT ?, ?, id, 'T1', 'OPEN', 1, 500000
+                SELECT ?, ?, id, 'T1', 'OPEN', ?, 500000
                   FROM branches WHERE tenant_id = ? AND code = ?
                 """,
                 UUID.randomUUID(),
                 tenantId,
+                operatorId,
                 tenantId,
                 branchCode);
 
-        return new Fixture(tenantId, branchCode, productUuid);
+        return new Fixture(tenantId, branchCode, productUuid, operatorId);
     }
 
     /** A zero-rated product, so a cart can genuinely mix tax treatments (M1-18). */
@@ -860,5 +892,13 @@ class SaleCommitTest {
         return productUuid;
     }
 
-    private record Fixture(long tenantId, String branchCode, UUID productUuid) {}
+    /**
+     * {@code operatorId} rather than the literal 1 these seeds used to carry.
+     *
+     * <p>Before V109 there was no {@code users} table and every {@code opened_by} / {@code
+     * created_by} column held a placeholder. Now they are foreign keys, so the id has to name
+     * somebody who exists — and "whichever user another test class happened to commit first"
+     * only works while the class execution order holds.
+     */
+    private record Fixture(long tenantId, String branchCode, UUID productUuid, long operatorId) {}
 }

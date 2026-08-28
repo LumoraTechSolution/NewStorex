@@ -25,6 +25,20 @@ public class ApiExceptionHandler {
         return ResponseEntity.unprocessableEntity().body(body(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage()));
     }
 
+    /**
+     * A valid credential of the wrong kind (M4-05).
+     *
+     * <p>403 rather than 401. The caller authenticated perfectly well and is simply not what this
+     * endpoint serves — answering "unauthorized" would send a till round a retry loop that cannot
+     * terminate, because presenting the same token again is the only thing it knows how to do.
+     */
+    @ExceptionHandler(com.lumora.pos.cloud.CloudPrincipals.WrongCredentialKindException.class)
+    public ResponseEntity<Map<String, Object>> wrongCredentialKind(
+            com.lumora.pos.cloud.CloudPrincipals.WrongCredentialKindException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(body(HttpStatus.FORBIDDEN, e.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> invalid(MethodArgumentNotValidException e) {
         String detail =

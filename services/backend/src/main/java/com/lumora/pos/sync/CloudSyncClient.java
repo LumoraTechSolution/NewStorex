@@ -16,6 +16,19 @@ public interface CloudSyncClient {
      */
     SyncBatchResult push(SyncBatch batch);
 
+    /**
+     * The downward half (M4-09): what the cloud says this shop is licensed and entitled to.
+     *
+     * <p>On this interface rather than on a client of its own because it rides the same tick, the
+     * same base URL and the same credential as the push. A second HTTP component would be a second
+     * place to configure a timeout and a second thing to forget when the token changes.
+     *
+     * @throws CloudUnreachableException for everything that might work later. There is no
+     *     per-item outcome to report here — the answer either arrived or it did not — and a failure
+     *     costs the till nothing, because the last answer is still cached and still governs.
+     */
+    Entitlement fetchEntitlement();
+
     class CloudUnreachableException extends RuntimeException {
         public CloudUnreachableException(String message, Throwable cause) {
             super(message, cause);

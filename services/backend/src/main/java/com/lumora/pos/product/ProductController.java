@@ -5,6 +5,7 @@ import java.util.Optional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -13,8 +14,18 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>Loopback only, like everything on the desktop profile. There is no authentication here
  * yet — M3-08 introduces PINs — and the till's API is not reachable from the LAN by design.
  */
+/*
+ * Desktop profile only.
+ *
+ * <p>Without this the class is a bean under every profile, so the cloud instance mounted it too —
+ * behind M4-01's filter, but mounted. Everything it calls goes through {@code LocalShop}, which
+ * asserts the database holds exactly one tenant, so on the cloud it could only ever fail. A route
+ * that exists and always fails is worse than one that does not exist: it is a promise in the URL
+ * space that somebody eventually tries to keep.
+ */
 @RestController
 @RequestMapping("/api/products")
+@Profile("desktop")
 public class ProductController {
 
     private final ProductLookup lookup;

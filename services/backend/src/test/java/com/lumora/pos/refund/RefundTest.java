@@ -11,6 +11,7 @@ import com.lumora.pos.shift.OpenShiftRequest;
 import com.lumora.pos.shift.ShiftService;
 import com.lumora.pos.testfixtures.ShopFixture;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -103,6 +104,7 @@ class RefundTest {
                         shop.branchCode(),
                         "T1",
                         sale.invoiceNumber(),
+                        ShopFixture.MANAGER_CODE,
                         ShopFixture.MANAGER_PIN,
                         null,
                         45_000L,
@@ -133,6 +135,7 @@ class RefundTest {
                         shop.branchCode(),
                         "T1",
                         sale.invoiceNumber(),
+                        ShopFixture.MANAGER_CODE,
                         "0000",
                         null,
                         45_000L,
@@ -146,32 +149,71 @@ class RefundTest {
                 .isZero();
     }
 
-    /** An unconfigured gate is a closed gate. The direction a default has to fail in. */
+    /**
+     * M3-08. The gate is a permission, not a role and not a shop-wide secret.
+     *
+     * <p>A cashier's PIN is perfectly valid — they can open a shift and sell all day with it. It
+     * buys nothing here, and the refusal names the reason rather than pretending the credential
+     * was wrong, because the person at the keypad has already proved who they are.
+     */
     @Test
-    void aShopWithNoManagerPinCanRefundNothing() {
+    void aCashierCannotAuthoriseARefundEvenWithTheRightPin() {
         ShopFixture.Shop shop = openShop();
         Sale sale = ringUpCash(shop, 1, 45_000, 45_000);
 
-        // Captured, not reconstructed: the hash belongs to whatever cost factor the encoder is
-        // configured with, and a constant here would tie the test to today's.
-        String hash =
-                jdbc.queryForObject(
-                        "SELECT manager_pin_hash FROM tenant_settings WHERE tenant_id = ?",
-                        String.class,
-                        shop.tenantId());
-        jdbc.update("UPDATE tenant_settings SET manager_pin_hash = NULL WHERE tenant_id = ?", shop.tenantId());
+        CreateRefundRequest byCashier =
+                withManager(
+                        refundRequest(shop, sale, 1, 45_000, 6_864, "CASH"), ShopFixture.CASHIER_CODE);
 
-        try {
-            assertThatThrownBy(() -> refunds.commit(refundRequest(shop, sale, 1, 45_000, 6_864, "CASH")))
-                    .hasMessageContaining("No manager PIN has been set");
-        } finally {
-            // Every fixture shares the one tenant a desktop database may hold, so this has to go
-            // back or it takes the rest of the class down with it.
-            jdbc.update(
-                    "UPDATE tenant_settings SET manager_pin_hash = ? WHERE tenant_id = ?",
-                    hash,
-                    shop.tenantId());
-        }
+        assertThatThrownBy(() -> refunds.commit(byCashier))
+                .hasMessageContaining("cannot authorise refunds");
+        assertThat(count("SELECT count(*) FROM refunds WHERE client_uuid = ?", byCashier.clientUuid()))
+                .isZero();
+    }
+
+    /**
+     * A code nobody holds fails exactly as a wrong PIN does, in the same words.
+     *
+     * <p>Deliberate: a message that distinguished "no such user" from "wrong PIN" would confirm
+     * which codes exist, turning one guess into two much smaller searches.
+     */
+    @Test
+    void anUnknownUserCodeCanRefundNothing() {
+        ShopFixture.Shop shop = openShop();
+        Sale sale = ringUpCash(shop, 1, 45_000, 45_000);
+
+        CreateRefundRequest byGhost =
+                withManager(refundRequest(shop, sale, 1, 45_000, 6_864, "CASH"), "NOBODY");
+
+        assertThatThrownBy(() -> refunds.commit(byGhost)).hasMessageContaining("not recognised");
+        assertThat(count("SELECT count(*) FROM refunds WHERE client_uuid = ?", byGhost.clientUuid()))
+                .isZero();
+    }
+
+    /**
+     * The audit trail M2 could not keep: who allowed it, and who rang it through.
+     *
+     * <p>{@code authorised_by} is the supervisor who typed their PIN; {@code created_by} is the
+     * cashier the shift belongs to. Both columns existed from V108 and could only hold the same
+     * placeholder until users did.
+     */
+    @Test
+    void aRefundRecordsBothTheAuthoriserAndTheCashier() {
+        ShopFixture.Shop shop = openShop();
+        Sale sale = ringUpCash(shop, 1, 45_000, 45_000);
+
+        CreateRefundRequest request = refundRequest(shop, sale, 1, 45_000, 6_864, "CASH");
+        refunds.commit(request);
+
+        Map<String, Object> row =
+                jdbc.queryForMap(
+                        "SELECT authorised_by, created_by FROM refunds WHERE client_uuid = ?",
+                        request.clientUuid());
+
+        assertThat(row.get("authorised_by")).isEqualTo(shop.managerId());
+        // The shift was opened by the manager in this fixture, so the two agree here. The point
+        // is that they are read from different places and can differ.
+        assertThat(row.get("created_by")).isEqualTo(shop.managerId());
     }
 
     // ------------------------------------------------------------------ partials (M2-08)
@@ -226,6 +268,7 @@ class RefundTest {
                         shop.branchCode(),
                         "T1",
                         sale.invoiceNumber(),
+                        ShopFixture.MANAGER_CODE,
                         ShopFixture.MANAGER_PIN,
                         null,
                         40_000L, // not what the line says
@@ -252,6 +295,7 @@ class RefundTest {
                                 shop.branchCode(),
                                 "T1",
                                 sale.invoiceNumber(),
+                        ShopFixture.MANAGER_CODE,
                                 ShopFixture.MANAGER_PIN,
                                 null,
                                 45_000L,
@@ -350,9 +394,10 @@ class RefundTest {
         ShopFixture.Shop shop = openShop();
         Sale sale = ringUpCash(shop, 1, 45_000, 45_000);
         jdbc.update(
-                "UPDATE shifts SET status = 'CLOSED', closed_at = now(), closed_by = 1, counted_cash_minor = 0,"
+                "UPDATE shifts SET status = 'CLOSED', closed_at = now(), closed_by = ?, counted_cash_minor = 0,"
                         + " expected_cash_minor = 0, variance_minor = 0"
                         + " WHERE branch_id = ? AND status = 'OPEN'",
+                shop.managerId(),
                 shop.branchId());
 
         assertThatThrownBy(() -> refunds.commit(refundRequest(shop, sale, 1, 45_000, 6_864, "CASH")))
@@ -368,6 +413,8 @@ class RefundTest {
                         UUID.randomUUID(),
                         shop.branchCode(),
                         "T1",
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                         null,
                         500_000L,
                         List.of(new DenominationCount(100_000L, 5))));
@@ -381,6 +428,7 @@ class RefundTest {
                 shop.branchCode(),
                 "T1",
                 sale.invoiceNumber(),
+                        ShopFixture.MANAGER_CODE,
                 ShopFixture.MANAGER_PIN,
                 null,
                 totalMinor,
@@ -388,6 +436,22 @@ class RefundTest {
                 0L,
                 List.of(line(1, qty, totalMinor, taxMinor)),
                 List.of(new CreateRefundRequest.Tender(kind, totalMinor)));
+    }
+
+    private static CreateRefundRequest withManager(CreateRefundRequest base, String managerCode) {
+        return new CreateRefundRequest(
+                base.clientUuid(),
+                base.branchCode(),
+                base.terminalCode(),
+                base.invoiceNumber(),
+                managerCode,
+                base.managerPin(),
+                base.refundedAt(),
+                base.totalMinor(),
+                base.taxMinor(),
+                base.roundingAdjustmentMinor(),
+                base.lines(),
+                base.tenders());
     }
 
     private static CreateRefundRequest.Line line(int saleLineNo, int qty, long totalMinor, long taxMinor) {
@@ -442,7 +506,7 @@ class RefundTest {
                                                 shop.productUuid(), qty, unitMinor, 0L, tax, total)),
                                 rounding,
                                 change,
-                                tenders));
+                                tenders, null));
         return new Sale(response.id(), clientUuid, response.invoiceNumber());
     }
 

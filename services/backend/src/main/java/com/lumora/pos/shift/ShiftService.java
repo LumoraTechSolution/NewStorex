@@ -3,6 +3,8 @@ package com.lumora.pos.shift;
 import com.lumora.pos.outbox.OutboxWriter;
 import com.lumora.pos.settings.TenantSettingsService;
 import com.lumora.pos.shop.LocalShop;
+import com.lumora.pos.user.Permission;
+import com.lumora.pos.user.UserService;
 import com.lumora.pos.web.RejectedException;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -49,13 +51,19 @@ public class ShiftService {
     private final OutboxWriter outbox;
     private final LocalShop shop;
     private final TenantSettingsService settings;
+    private final UserService users;
 
     public ShiftService(
-            JdbcTemplate jdbc, OutboxWriter outbox, LocalShop shop, TenantSettingsService settings) {
+            JdbcTemplate jdbc,
+            OutboxWriter outbox,
+            LocalShop shop,
+            TenantSettingsService settings,
+            UserService users) {
         this.jdbc = jdbc;
         this.outbox = outbox;
         this.shop = shop;
         this.settings = settings;
+        this.users = users;
     }
 
     // ------------------------------------------------------------------------- open
@@ -99,6 +107,15 @@ public class ShiftService {
                             .formatted(request.terminalCode(), request.branchCode()));
         }
 
+        // M3-08. Who is taking the till. Authenticated before the float is written, so a shift
+        // never exists without a named person answering for the drawer it just opened.
+        UserService.Operator operator =
+                users.authorise(
+                        branch.tenantId(),
+                        request.operatorCode(),
+                        request.operatorPin(),
+                        Permission.RUN_SHIFT);
+
         // A genuine race — two identical requests in flight at once — still lands on the unique
         // index and is deliberately not caught. The transaction rolls back and the terminal's
         // retry finds the winner at the top of this method, which is the only correct recovery:
@@ -118,7 +135,7 @@ public class ShiftService {
                         branch.id(),
                         request.terminalCode(),
                         Timestamp.from(request.openedAt() != null ? request.openedAt() : Instant.now()),
-                        LocalShop.SEEDED_OPERATOR_ID,
+                        operator.id(),
                         floatMinor);
 
         insertCounts(shiftId, "OPEN", request.openingCount());
@@ -170,23 +187,39 @@ public class ShiftService {
      * close. Opening a shift is entirely local, so requiring one costs nothing against §A — the
      * network is still on the critical path of nothing.
      */
-    public long requireOpenShiftId(long tenantId, long branchId, String terminalCode) {
-        List<Long> ids =
-                jdbc.queryForList(
+    public OpenShift requireOpenShift(long tenantId, long branchId, String terminalCode) {
+        List<OpenShift> found =
+                jdbc.query(
                         """
-                        SELECT id FROM shifts
+                        SELECT id, opened_by FROM shifts
                         WHERE tenant_id = ? AND branch_id = ? AND terminal_code = ? AND status = 'OPEN'
                         """,
-                        Long.class,
+                        (rs, row) -> new OpenShift(rs.getLong("id"), rs.getLong("opened_by")),
                         tenantId,
                         branchId,
                         terminalCode);
-        if (ids.isEmpty()) {
+        if (found.isEmpty()) {
             throw new RejectedException(
                     "No shift is open on terminal %s — open one before trading".formatted(terminalCode));
         }
-        return ids.get(0);
+        return found.get(0);
     }
+
+    /**
+     * The open shift, and who is answerable for it.
+     *
+     * <p>{@code operatorId} is the shift's {@code opened_by}, and it is what every sale, cash
+     * movement and stock movement made during the shift is attributed to (M3-08). The shift is
+     * the session: the till already refuses to trade without one, the person who opened it
+     * authenticated to do so, and a single till has one person behind it at a time. That is a
+     * true statement about a v1 shop and it retires the placeholder operator id that every
+     * {@code created_by} column carried from V100 until now.
+     *
+     * <p>It stops being true the moment two cashiers share a till on one shift, which is what
+     * M3-09's real sessions are for. Until then this attributes to the person who counted the
+     * float, which is both defensible and checkable — rather than to nobody, which was neither.
+     */
+    public record OpenShift(long id, long operatorId) {}
 
     // ------------------------------------------------------------------------ close
 
@@ -199,6 +232,18 @@ public class ShiftService {
             // recomputing them against a drawer that has since been emptied.
             return load(shiftId);
         }
+
+        // M3-08. Whoever counts the drawer signs for the count. Deliberately not required to be
+        // the same person who opened the shift — a shift very often outlives the person who
+        // started it, and forcing a match would leave a till nobody can close when someone goes
+        // home sick. `opened_by` and `closed_by` are separate columns precisely so the handover
+        // is recorded rather than hidden.
+        UserService.Operator closer =
+                users.authorise(
+                        shift.tenantId(),
+                        request.operatorCode(),
+                        request.operatorPin(),
+                        Permission.RUN_SHIFT);
 
         long countedMinor = countedTotal(request.closingCount());
         if (request.countedCashMinor() != null && request.countedCashMinor() != countedMinor) {
@@ -241,7 +286,7 @@ public class ShiftService {
                  WHERE id = ? AND status = 'OPEN'
                 """,
                 Timestamp.from(request.closedAt() != null ? request.closedAt() : Instant.now()),
-                LocalShop.SEEDED_OPERATOR_ID,
+                closer.id(),
                 countedMinor,
                 expectedMinor,
                 varianceMinor,

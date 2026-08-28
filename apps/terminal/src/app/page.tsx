@@ -1,18 +1,24 @@
 'use client';
 
 import { formatMinor } from '@lumora/domain';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
 import { CartLines } from '@/components/CartLines';
 import { FunctionBar, type FunctionKey } from '@/components/FunctionBar';
+import { CustomerOverlay, type Customer } from '@/components/CustomerOverlay';
 import { RefundOverlay, type RefundOutcome } from '@/components/RefundOverlay';
 import { ScanField } from '@/components/ScanField';
 import { ShiftOverlay, type ClosedShift } from '@/components/ShiftOverlay';
+import { TaxInvoiceOverlay, type IssuedTaxInvoice } from '@/components/TaxInvoiceOverlay';
 import { SyncStatusStrip } from '@/components/SyncStatusStrip';
+import { LicenceNotice } from '@/components/LicenceNotice';
 import { TenderOverlay, type TenderOutcome } from '@/components/TenderOverlay';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { TotalsPanel } from '@/components/TotalsPanel';
 import { buildReceiptWithDrawerKick, type ReceiptData } from '@/lib/receipt';
+import { buildTaxInvoice } from '@/lib/taxInvoice';
+import { useEntitlement } from '@/lib/useEntitlement';
 import { useGlobalKeys } from '@/lib/scanner';
 import { useCart, type Cart, type Product } from '@/lib/useCart';
 import { useShift } from '@/lib/useShift';
@@ -34,13 +40,21 @@ type Committed = {
 // Placeholder until M5-03's first-run wizard provisions real branch/terminal identity.
 const STORE_NAME = 'StoreX';
 const TAGLINE = 'Powered by Lumora Tech';
+const STORE_ADDRESS = '123 Peradeniya Road, Kandy';
 const BRANCH_CODE = 'KND';
 const TERMINAL_CODE = 'T1';
 
-function receiptDataFor(cart: Cart, outcome: TenderOutcome, committed: Committed): ReceiptData {
+function receiptDataFor(
+  cart: Cart,
+  outcome: TenderOutcome,
+  committed: Committed,
+  customerName: string | null,
+): ReceiptData {
   return {
     storeName: STORE_NAME,
     tagline: TAGLINE,
+    storeAddress: STORE_ADDRESS,
+    customerName,
     branchName: BRANCH_CODE,
     branchCode: BRANCH_CODE,
     terminalCode: TERMINAL_CODE,
@@ -118,13 +132,43 @@ function withPrintOutcome(
  * the picker's own arrow handling all gate on.
  */
 export default function Page() {
-  const { cart, addProduct, changeQty, voidLine, clear, move } = useCart();
+  const router = useRouter();
+  const { cart, addProduct, changeQty, voidLine, clear: clearCart, move } = useCart();
   const [message, setMessage] = useState<{ tone: 'ok' | 'danger'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [picker, setPicker] = useState<Product[] | null>(null);
   const [tendering, setTendering] = useState(false);
   const [cashingUp, setCashingUp] = useState(false);
   const [returning, setReturning] = useState(false);
+  const [choosingCustomer, setChoosingCustomer] = useState(false);
+  /**
+   * Who this sale is for (M3-11), or null — which is the normal case and stays that way.
+   *
+   * Lives here rather than in `useCart` deliberately: the cart is money, and this is not. Nothing
+   * about the totals is derived from it, and putting it in the cart's state would make that
+   * relationship a matter of discipline instead of a matter of type.
+   */
+  const [customer, setCustomer] = useState<Customer | null>(null);
+  const [issuingTaxInvoice, setIssuingTaxInvoice] = useState(false);
+  // What this shop has bought (M4-09). Read from the till's own database, so it answers the same
+  // during an outage as it does online — a capability that vanished with the internet would put
+  // the network back on the critical path of selling.
+  const { allows } = useEntitlement();
+  // The receipt a tax invoice would most likely be asked for. Survives `clear()` on purpose:
+  // the customer asks after the sale is finished and the cart has already been emptied.
+  const [lastSaleInvoiceNumber, setLastSaleInvoiceNumber] = useState<string | null>(null);
+
+  /**
+   * Empties the cart and forgets who it was for.
+   *
+   * <p>The two have to happen together and there must be exactly one way to do it. A cleared cart
+   * that still remembers a customer is the next sale being quietly attributed to the last one's —
+   * on a screen where the only evidence is the F6 label a cashier has no reason to look at.
+   */
+  const clear = useCallback(() => {
+    clearCart();
+    setCustomer(null);
+  }, [clearCart]);
 
   // M2-01. Whether this till may trade at all, answered by the backend and never assumed.
   const shift = useShift(BRANCH_CODE, TERMINAL_CODE);
@@ -248,6 +292,9 @@ export default function Page() {
               taxRateBp: line.taxRateBp,
             })),
             tenders: outcome.tenders.map((t) => ({ kind: t.kind, amountMinor: t.amountMinor })),
+            // M3-11. Null nine times in ten, and the backend refuses one that is not on file or
+            // no longer active rather than dropping it silently.
+            customerClientUuid: customer?.clientUuid ?? null,
           }),
         });
 
@@ -255,6 +302,7 @@ export default function Page() {
         if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
 
         const committed = body as Committed;
+        setLastSaleInvoiceNumber(committed.invoiceNumber);
         const text = `${committed.invoiceNumber} — ${formatMinor(committed.totalMinor)}${
           committed.changeMinor > 0 ? ` · change ${formatMinor(committed.changeMinor)}` : ''
         }${committed.alreadyExisted ? ' (already existed)' : ''}`;
@@ -262,7 +310,9 @@ export default function Page() {
         // The receipt and the drawer kick are one print job (M1-14) — best-effort, and never
         // allowed to make a committed sale look like it failed.
         const printed = await print(
-          buildReceiptWithDrawerKick(receiptDataFor(cart, outcome, committed)),
+          buildReceiptWithDrawerKick(
+            receiptDataFor(cart, outcome, committed, customer?.name ?? null),
+          ),
         );
         const outcomeText = withPrintOutcome(text, printed, 'receipt');
 
@@ -280,8 +330,26 @@ export default function Page() {
         setBusy(false);
       }
     },
-    [cart, clear, shift],
+    [cart, clear, customer?.clientUuid, customer?.name, shift],
   );
+
+  /**
+   * Prints an issued tax invoice (M5-09).
+   *
+   * <p>Best-effort like every other document here: the invoice is already committed on the backend
+   * and has already taken its serial number by the time this runs, so a printer failure must report
+   * itself without suggesting the invoice was not issued. It can be reprinted — issuing again
+   * returns the same document rather than creating a second one.
+   */
+  const printTaxInvoice = useCallback(async (invoice: IssuedTaxInvoice) => {
+    const printed = await print(buildTaxInvoice(invoice));
+    const outcome = withPrintOutcome(
+      `Tax invoice ${invoice.invoiceNumber}`,
+      printed,
+      'tax invoice',
+    );
+    setMessage({ tone: outcome.failed ? 'danger' : 'ok', text: outcome.text });
+  }, []);
 
   // ---------------------------------------------------------------------- cash up (M2)
 
@@ -352,8 +420,14 @@ export default function Page() {
   // Only one modal owns the keyboard at a time. Neither the picker nor the overlay nests
   // inside the other — opening one is only possible from the plain cart screen.
   const interactionsBlocked = useCallback(
-    () => picker !== null || tendering || cashingUp || returning,
-    [cashingUp, picker, returning, tendering],
+    () =>
+      picker !== null ||
+      tendering ||
+      cashingUp ||
+      returning ||
+      choosingCustomer ||
+      issuingTaxInvoice,
+    [cashingUp, choosingCustomer, issuingTaxInvoice, picker, returning, tendering],
   );
   const noPicker = useCallback(() => !interactionsBlocked(), [interactionsBlocked]);
 
@@ -364,14 +438,27 @@ export default function Page() {
     { key: '-', run: () => changeQty(cart.selected, -1), when: noPicker },
     { key: 'F2', run: () => changeQty(cart.selected, 1), when: noPicker },
     { key: 'F4', run: () => voidLine(cart.selected), when: noPicker },
+    { key: 'F6', run: () => setChoosingCustomer(true), when: noPicker },
     { key: 'F8', run: clear, when: noPicker },
     { key: 'F9', run: () => setReturning(true), when: noPicker },
     { key: 'F10', run: () => setCashingUp(true), when: noPicker },
     { key: 'F12', run: openTender, when: noPicker },
+    // M3-01. Deliberately not an F-key. Every slot on the function bar is a selling action, and
+    // putting "change prices" one keypress away from "void line" is how a busy cashier ends up
+    // somewhere they did not mean to be. Ctrl+B is out of the cashier's vocabulary on purpose.
+    { key: 'b', ctrl: true, run: () => router.push('/back-office'), when: noPicker },
+    // M5-09. Issued on request and after the fact, so it sits with Ctrl+B rather than taking
+    // a function key off the selling path.
+    {
+      key: 'i',
+      ctrl: true,
+      run: () => setIssuingTaxInvoice(true),
+      when: () => noPicker() && allows('tax_invoice'),
+    },
     {
       key: 'Escape',
       run: () => setPicker(null),
-      when: () => !tendering && !cashingUp && !returning,
+      when: () => !tendering && !cashingUp && !returning && !choosingCustomer && !issuingTaxInvoice,
     },
   ]);
 
@@ -406,7 +493,17 @@ export default function Page() {
       disabled: cart.selected < 0,
     },
     { key: 'F5', label: 'Discount' },
-    { key: 'F6', label: 'Customer' },
+    {
+      key: 'F6',
+      // The name once somebody is on the sale, so the bar itself is the reminder — a cashier
+      // should not have to open the overlay to find out whether they attached anybody.
+      label: customer ? customer.name : 'Customer',
+      run: () => setChoosingCustomer(true),
+      // Disabled rather than removed when the plan does not include customers (M4-09). The bar is
+      // muscle memory: every slot keeps its position for the life of the product, and a plan
+      // change must never renumber the keys a cashier has learnt.
+      disabled: !shift.canTrade || !allows('customers'),
+    },
     { key: 'F7', label: 'Hold' },
     { key: 'F8', label: 'Clear', run: clear, disabled: cart.lines.length === 0 },
     { key: 'F9', label: 'Return', run: () => setReturning(true), disabled: !shift.canTrade },
@@ -423,6 +520,8 @@ export default function Page() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <SyncStatusStrip />
+      {/* Below the sync strip, because a lapse is the explanation for what that strip is showing. */}
+      <LicenceNotice />
 
       <header className="border-hair flex shrink-0 items-center gap-4 border-b px-4 py-3">
         <div className="flex-1">
@@ -432,6 +531,12 @@ export default function Page() {
             disabled={interactionsBlocked()}
           />
         </div>
+        {/*
+          The only hint that the back office exists. Deliberately small and out of the way: it is
+          not a cashier's control, and a prominent button labelled "back office" beside the scan
+          field is one mis-tap from a price list during a queue.
+        */}
+        <span className="text-ink-3 hidden text-xs sm:inline">Ctrl+B back office</span>
         <ThemeToggle />
       </header>
 
@@ -536,6 +641,35 @@ export default function Page() {
           busy={busy}
           onCancel={() => setTendering(false)}
           onConfirm={(outcome) => void submitSale(outcome)}
+        />
+      )}
+
+      {choosingCustomer && (
+        <CustomerOverlay
+          attached={customer}
+          branchCode={BRANCH_CODE}
+          terminalCode={TERMINAL_CODE}
+          onAttach={(chosen) => {
+            setCustomer(chosen);
+            setChoosingCustomer(false);
+            setMessage(
+              chosen === null
+                ? { tone: 'ok', text: 'Customer removed from this sale' }
+                : { tone: 'ok', text: `This sale is for ${chosen.name}` },
+            );
+          }}
+          onClose={() => setChoosingCustomer(false)}
+        />
+      )}
+
+      {issuingTaxInvoice && (
+        <TaxInvoiceOverlay
+          defaultSaleInvoiceNumber={lastSaleInvoiceNumber}
+          onIssued={(invoice) => {
+            setIssuingTaxInvoice(false);
+            void printTaxInvoice(invoice);
+          }}
+          onClose={() => setIssuingTaxInvoice(false)}
         />
       )}
     </div>

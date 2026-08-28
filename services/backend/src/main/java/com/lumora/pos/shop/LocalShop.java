@@ -56,13 +56,4 @@ public class LocalShop {
     }
 
     public record Branch(long id, long tenantId, String code) {}
-
-    /**
-     * Until users exist (M3-08) every audited action is attributed to the seeded operator.
-     *
-     * <p>A placeholder for a real id, not a null-object: the {@code created_by} columns are NOT
-     * NULL because "who did this" is the point of an audit trail, and a nullable one would make
-     * the trail optional the moment somebody found it inconvenient.
-     */
-    public static final long SEEDED_OPERATOR_ID = 1L;
 }

@@ -89,7 +89,9 @@ class ShiftLifecycleTest {
         ShopFixture.Shop shop = fixtures.seed();
         OpenShiftRequest bad =
                 new OpenShiftRequest(
-                        UUID.randomUUID(), shop.branchCode(), "T1", null, 999_999L, FLOAT_5000);
+                        UUID.randomUUID(), shop.branchCode(), "T1",
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN, null, 999_999L, FLOAT_5000);
 
         assertThatThrownBy(() -> shifts.open(bad)).hasMessageContaining("does not match the counted");
     }
@@ -104,6 +106,8 @@ class ShiftLifecycleTest {
                         UUID.randomUUID(),
                         shop.branchCode(),
                         "T1",
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                         null,
                         null,
                         List.of(new DenominationCount(25_000L, 1)));
@@ -259,6 +263,8 @@ class ShiftLifecycleTest {
                 shifts.close(
                         shift.id(),
                         new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                                 null,
                                 null,
                                 List.of(
@@ -283,13 +289,17 @@ class ShiftLifecycleTest {
         List<DenominationCount> shortCount = List.of(new DenominationCount(100_000L, 4));
 
         assertThatThrownBy(
-                        () -> shifts.close(shift.id(), new CloseShiftRequest(null, null, shortCount, null, null)))
+                        () -> shifts.close(shift.id(), new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,null, null, shortCount, null, null)))
                 .hasMessageContaining("a reason code is required");
 
         ShiftResponse closed =
                 shifts.close(
                         shift.id(),
-                        new CloseShiftRequest(null, null, shortCount, "MISCOUNT", "recounted twice"));
+                        new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,null, null, shortCount, "MISCOUNT", "recounted twice"));
         assertThat(closed.varianceMinor()).isEqualTo(-100_000);
         assertThat(closed.varianceReason()).isEqualTo("MISCOUNT");
     }
@@ -314,6 +324,8 @@ class ShiftLifecycleTest {
                 shifts.close(
                         shift.id(),
                         new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                                 null, null, List.of(new DenominationCount(100_000L, 4)), null, null));
 
         // 1,000.00 short, and this shop's threshold is 2,000.00 — no reason needed.
@@ -331,6 +343,8 @@ class ShiftLifecycleTest {
                                 shifts.close(
                                         shift.id(),
                                         new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                                                 null,
                                                 null,
                                                 List.of(new DenominationCount(100_000L, 4)),
@@ -348,6 +362,8 @@ class ShiftLifecycleTest {
                 shifts.close(
                         shift.id(),
                         new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                                 null, null, List.of(new DenominationCount(100_000L, 5)), null, null));
         // A different count entirely: the resend must not recount, because a Z-report may already
         // have been printed against the first one.
@@ -355,6 +371,8 @@ class ShiftLifecycleTest {
                 shifts.close(
                         shift.id(),
                         new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                                 null, null, List.of(new DenominationCount(100_000L, 1)), null, null));
 
         assertThat(again.countedCashMinor()).isEqualTo(first.countedCashMinor());
@@ -377,6 +395,8 @@ class ShiftLifecycleTest {
                 shifts.close(
                         shift.id(),
                         new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                                 null,
                                 null,
                                 List.of(
@@ -391,12 +411,13 @@ class ShiftLifecycleTest {
                 """
                 INSERT INTO cash_movements (client_uuid, tenant_id, branch_id, shift_id, kind,
                                             amount_minor, reason_code, created_by)
-                VALUES (?, ?, ?, ?, 'DROP', -50000, 'SAFE_DROP', 1)
+                VALUES (?, ?, ?, ?, 'DROP', -50000, 'SAFE_DROP', ?)
                 """,
                 UUID.randomUUID(),
                 shop.tenantId(),
                 shop.branchId(),
-                shift.id());
+                shift.id(),
+                shop.managerId());
 
         Long stored =
                 jdbc.queryForObject(
@@ -425,6 +446,8 @@ class ShiftLifecycleTest {
         shifts.close(
                 shift.id(),
                 new CloseShiftRequest(
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN,
                         null,
                         null,
                         List.of(new DenominationCount(100_000L, 4), new DenominationCount(10_000L, 4)),
@@ -462,7 +485,9 @@ class ShiftLifecycleTest {
     // ------------------------------------------------------------------------ helpers
 
     private OpenShiftRequest openRequest(ShopFixture.Shop shop, UUID clientUuid) {
-        return new OpenShiftRequest(clientUuid, shop.branchCode(), "T1", null, 500_000L, FLOAT_5000);
+        return new OpenShiftRequest(clientUuid, shop.branchCode(), "T1",
+                        ShopFixture.MANAGER_CODE,
+                        ShopFixture.MANAGER_PIN, null, 500_000L, FLOAT_5000);
     }
 
     /** One line, settled in cash, with change if the tender exceeds the total. */
@@ -488,7 +513,7 @@ class ShiftLifecycleTest {
                                         shop.productUuid(), 1, totalMinor, 0L, taxMinor, totalMinor)),
                         roundingMinor,
                         changeMinor,
-                        List.of(new CreateSaleRequest.Tender("CASH", cashMinor))));
+                        List.of(new CreateSaleRequest.Tender("CASH", cashMinor)), null));
     }
 
     private static long roundToRupee(long amountMinor) {

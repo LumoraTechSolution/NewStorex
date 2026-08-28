@@ -42,6 +42,18 @@ async function type(till: Till, digits: string) {
   await till.page.keyboard.type(digits, { delay: 10 });
 }
 
+/**
+ * Signs in at an operator prompt: user code, Enter, PIN (M3-08).
+ *
+ * <p>Enter rather than Tab on purpose — both move to the PIN, and Enter is the one a cashier will
+ * reach for, so it is the one worth having a test fail over.
+ */
+async function signAs(till: Till, code: string, pin: string) {
+  await till.page.keyboard.type(code, { delay: 10 });
+  await till.page.keyboard.press('Enter');
+  await type(till, pin);
+}
+
 /** Rings up one Tea, settled in exact cash. Returns the invoice number it was given. */
 async function ringUpOneTea(till: Till): Promise<string> {
   await scan(till, TEA.barcode);
@@ -147,9 +159,12 @@ test.describe('returns — Gate M2', () => {
     // The total, not the F12 hint that also says "refund".
     await expect(till.page.getByText('Refund', { exact: true })).toBeVisible();
 
-    await till.page.keyboard.press('F12'); // to the PIN
-    await expect(till.page.getByText('A manager must authorise this refund.')).toBeVisible();
-    await type(till, '1234'); // the dev-seed manager PIN
+    await till.page.keyboard.press('F12'); // to the authorisation prompt
+    await expect(
+      till.page.getByText('A supervisor or manager must authorise this refund.'),
+    ).toBeVisible();
+    // A named user holding AUTHORISE_REFUND, not a shop-wide PIN (M3-08).
+    await signAs(till, 'MGR', '1234');
     await till.page.keyboard.press('Enter');
 
     const status = till.page.getByRole('status').filter({ hasText: /-CN-\d{6}/ });
@@ -164,6 +179,15 @@ test.describe('returns — Gate M2', () => {
     expect(scalar(`SELECT total_minor FROM sales WHERE invoice_number = '${invoiceNumber}'`)).toBe(
       String(TEA.unitMinor),
     );
+
+    // And it names who allowed it (M3-08). Before users, this column could only hold a
+    // placeholder that pointed at nobody.
+    expect(
+      scalar(
+        `SELECT u.code FROM refunds r JOIN users u ON u.id = r.authorised_by
+          WHERE r.credit_note_number = '${creditNote}'`,
+      ),
+    ).toBe('MGR');
 
     // And it printed as its own document, naming the invoice (M2-06).
     expect(till.printedText()).toContain('CREDIT NOTE');
@@ -184,7 +208,14 @@ test.describe('returns — Gate M2', () => {
     await till.page.keyboard.press('Escape');
   });
 
-  test('a wrong manager PIN refunds nothing', async ({ till }) => {
+  /**
+   * Gate M2's other half, and M3-08's reason for existing.
+   *
+   * <p>NIMAL's PIN is correct. He can open a shift with it and sell all day. It buys nothing here,
+   * and the refusal says so by name rather than pretending the credential was wrong — at that
+   * point the person has already proved who they are.
+   */
+  test('a cashier cannot authorise a refund, even with the right PIN', async ({ till }) => {
     const invoiceNumber = await ringUpOneTea(till);
 
     await till.page.keyboard.press('F9');
@@ -195,7 +226,36 @@ test.describe('returns — Gate M2', () => {
     });
     await till.page.keyboard.press('Enter');
     await till.page.keyboard.press('F12');
-    await type(till, '0000');
+    await signAs(till, 'NIMAL', '1234');
+    await till.page.keyboard.press('Enter');
+
+    await expect(alert(till)).toContainText('cannot authorise refunds', { timeout: 10_000 });
+    expect(
+      scalar(
+        `SELECT count(*) FROM refunds
+          WHERE sale_id = (SELECT id FROM sales WHERE invoice_number = '${invoiceNumber}')`,
+      ),
+    ).toBe('0');
+
+    expect(await till.pointerEvents()).toEqual([]);
+
+    await till.page.keyboard.press('Escape');
+    await till.page.keyboard.press('Escape');
+    await till.page.keyboard.press('Escape');
+  });
+
+  test('a wrong PIN refunds nothing', async ({ till }) => {
+    const invoiceNumber = await ringUpOneTea(till);
+
+    await till.page.keyboard.press('F9');
+    await till.page.keyboard.type(invoiceNumber, { delay: 0 });
+    await till.page.keyboard.press('Enter');
+    await expect(till.page.getByRole('list', { name: 'Sale lines' })).toBeVisible({
+      timeout: 10_000,
+    });
+    await till.page.keyboard.press('Enter');
+    await till.page.keyboard.press('F12');
+    await signAs(till, 'MGR', '0000');
     await till.page.keyboard.press('Enter');
 
     await expect(alert(till)).toContainText('not recognised', { timeout: 10_000 });

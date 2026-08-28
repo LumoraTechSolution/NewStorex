@@ -13,6 +13,7 @@ import { WATERMARK_FILE, type Watermark } from './watermark';
 export default async function globalSetup() {
   assertDatabaseReachable();
   assertSeeded();
+  clearPinThrottle();
   recordWatermark();
   openShift();
 }
@@ -57,11 +58,28 @@ function assertSeeded() {
     throw new Error("Branch 'KND' is not seeded. Run:  pnpm db:seed");
   }
 
-  // M2-07. The refund spec authorises with this PIN, and a shop with no manager PIN can refund
-  // nothing at all — which would look like a broken refund flow rather than an unseeded database.
-  if (scalar('SELECT 1 FROM tenant_settings WHERE manager_pin_hash IS NOT NULL') === null) {
+  // M2-07 via M3-08. The refund specs authorise as MGR and expect NIMAL to be refused, so both
+  // have to exist and hold the roles the specs assume. Checked here because the alternative is a
+  // refusal deep inside a refund spec that reads like a broken refund flow rather than an
+  // unseeded database.
+  const staff: readonly [string, string][] = [
+    ['MGR', 'authorises the refund specs'],
+    ['NIMAL', 'is the cashier the refusal spec expects'],
+  ];
+  const absent = staff.filter(
+    ([code]) => scalar(`SELECT 1 FROM users WHERE code = '${code}' AND active`) === null,
+  );
+  if (absent.length > 0) {
     throw new Error(
-      'No manager PIN is set, so no refund can be authorised (M2-07). Run:  pnpm db:seed',
+      'The dev seed is missing users these specs sign in as:\n' +
+        absent.map(([code, what]) => `  ${code} — ${what}`).join('\n') +
+        '\n\nSeed it with:  pnpm db:seed',
+    );
+  }
+  if (scalar("SELECT 1 FROM users WHERE code = 'NIMAL' AND role = 'CASHIER'") === null) {
+    throw new Error(
+      "NIMAL is seeded but is not a CASHIER, so the 'a cashier cannot authorise a refund' spec " +
+        'would pass for the wrong reason. Reseed with:  pnpm db:seed',
     );
   }
 }
@@ -76,6 +94,10 @@ function assertSeeded() {
  * Idempotent — a developer who already has a shift open on this till keeps it, and the teardown
  * only removes a shift this run created (it is above the watermark, theirs is not).
  *
+ * `opened_by` is looked up rather than hardcoded: since M3-08 it is a real foreign key, and every
+ * sale these specs ring up is attributed to whoever it names. A literal 1 happened to work on the
+ * day V109 ran and would stop working on any database whose first user is somebody else.
+ *
  * One consequence worth knowing: a shift opened this way writes no outbox row, because it never
  * went through ShiftService. So an e2e run leaves cash movements, refunds and sales in the cloud
  * but no shift — which looks like a sync bug and is not one. Shift ingest, including the monotonic
@@ -85,7 +107,10 @@ function openShift() {
   psql(`
     INSERT INTO shifts (client_uuid, tenant_id, branch_id, terminal_code, status,
                         opened_by, opening_float_minor)
-    SELECT gen_random_uuid(), b.tenant_id, b.id, 'T1', 'OPEN', 1, 500000
+    SELECT gen_random_uuid(), b.tenant_id, b.id, 'T1', 'OPEN',
+           (SELECT u.id FROM users u
+             WHERE u.tenant_id = b.tenant_id AND u.active AND u.code = 'MGR'),
+           500000
       FROM branches b
      WHERE b.code = 'KND'
        AND NOT EXISTS (
@@ -103,6 +128,22 @@ function openShift() {
  * it started, and removes only what it added. Nothing a developer rang up by hand is ever
  * inside that range.
  */
+/**
+ * Forgets the PIN failures the last run deliberately caused (M3-13).
+ *
+ * Several specs type a wrong PIN on purpose — that is the behaviour they exist to assert — and
+ * `PinAttemptGuard` counts consecutive failures across a fifteen-minute window. Two runs in quick
+ * succession would therefore start the second one part-way into a cooling-off period, and the spec
+ * that fails would be a different one each time depending on ordering. That is a flake with a
+ * plausible-looking cause, which is the worst kind.
+ *
+ * Only the throttle is cleared, never a user or a PIN: the thing being reset is a rate limit this
+ * suite itself tripped, and nothing about the shop's own state.
+ */
+function clearPinThrottle() {
+  psql('DELETE FROM pin_attempts');
+}
+
 function recordWatermark() {
   const mark = (table: string) =>
     Number(scalar(`SELECT coalesce(max(id), 0) FROM ${table}`) ?? '0');

@@ -18,8 +18,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Receives what a shop's outbox pushed.
  *
- * <p>Every write is an upsert keyed on the aggregate's {@code client_uuid}, so redelivering a batch
- * changes nothing. That is the property the whole retry design leans on: the drain never has to know
+ * <p>Every write is an upsert keyed on {@code (tenant_id, client_uuid)}, so redelivering a batch
+ * changes nothing. The tenant is part of that key rather than the uuid standing alone (V206): a
+ * uuid identifies an aggregate <em>within a shop</em>, and a global key would let one shop's row be
+ * the conflict target for another's. That is the property the whole retry design leans on: the drain never has to know
  * whether its last attempt got through before the connection dropped, because sending it again is
  * free.
  *
@@ -48,9 +50,12 @@ public class SyncIngestService {
         this.perItemTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    public SyncBatchResult ingest(SyncBatch batch) {
-        long tenantId = upsertTenant(batch.tenantClientUuid(), batch.tenantName());
-
+    /**
+     * @param tenantId resolved from the request's bearer token by {@code TenantAuthFilter}, never
+     *     from the batch. Passed in rather than looked up here so this service has no way to
+     *     consult the payload for it (M4-01).
+     */
+    public SyncBatchResult ingest(long tenantId, SyncBatch batch) {
         List<UUID> accepted = new ArrayList<>();
         List<SyncBatchResult.Rejection> rejected = new ArrayList<>();
 
@@ -78,6 +83,23 @@ public class SyncIngestService {
                         case "cash_movement" ->
                                 upsertCashMovement(tenantId, item.aggregateId(), item.payload());
                         case "refund" -> upsertRefund(tenantId, item.aggregateId(), item.payload());
+                        case "goods_receipt" -> ingestGoodsReceipt(tenantId, item.payload());
+                        case "stock_adjustment" ->
+                                ingestMovementsAt(tenantId, item.payload(), text(item.payload(), "adjustedAt"));
+                        case "stocktake" ->
+                                ingestMovementsAt(tenantId, item.payload(), text(item.payload(), "countedAt"));
+                        // M3-12. Unlike everything above, these three are mutable: a price
+                        // changes, somebody is promoted, a customer corrects their number. Each
+                        // delivery carries the whole row, so the upsert is a real UPDATE and the
+                        // last arrival wins — no state machine, nothing to order.
+                        case "product" -> upsertProduct(tenantId, item.aggregateId(), item.payload());
+                        case "user" -> upsertUser(tenantId, item.aggregateId(), item.payload());
+                        case "customer" ->
+                                upsertCustomer(tenantId, item.aggregateId(), item.payload());
+                        // M5-09. Immutable like a sale: once issued, a tax invoice is a legal
+                        // document that cannot be edited, only cancelled by a credit note.
+                        case "tax_invoice" ->
+                                upsertTaxInvoice(tenantId, item.aggregateId(), item.payload());
                         default ->
                                 throw new IllegalArgumentException(
                                         "Unsupported aggregate kind: " + item.aggregate());
@@ -85,20 +107,41 @@ public class SyncIngestService {
                 });
     }
 
-    // ------------------------------------------------------------------------ tenant
+    // ------------------------------------------------------------------- tax invoice
 
-    private long upsertTenant(UUID clientUuid, String name) {
-        // Self-registering on first sight keeps the M0 spike honest end to end. From M4-08 a
-        // tenant is provisioned by super-admin and an unknown one is a rejection, not a row.
+    /**
+     * The IRD tax invoice (M5-09).
+     *
+     * <p>{@code DO NOTHING} rather than {@code DO UPDATE}: an issued tax invoice is immutable, so
+     * a redelivery has nothing to say that the stored row does not already contain. The same
+     * treatment cash movements get, and for the same reason.
+     */
+    private void upsertTaxInvoice(long tenantId, UUID clientUuid, JsonNode payload) {
+        String purchaserTin = text(payload, "purchaserTin");
         jdbc.update(
                 """
-                INSERT INTO tenants (client_uuid, name) VALUES (?, ?)
-                ON CONFLICT (client_uuid) DO UPDATE SET name = excluded.name
+                INSERT INTO tax_invoices (
+                    client_uuid, tenant_id, branch_code, terminal_code, invoice_number,
+                    sale_invoice_number, issued_at, supplied_at, supplier_tin, purchaser_tin,
+                    total_excl_vat_minor, vat_minor, total_incl_vat_minor)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id, client_uuid) DO NOTHING
                 """,
                 clientUuid,
-                name);
-        return jdbc.queryForObject(
-                "SELECT id FROM tenants WHERE client_uuid = ?", Long.class, clientUuid);
+                tenantId,
+                text(payload, "branchCode"),
+                text(payload, "terminalCode"),
+                text(payload, "invoiceNumber"),
+                text(payload, "saleInvoiceNumber"),
+                Timestamp.from(Instant.parse(text(payload, "issuedAt"))),
+                Timestamp.from(Instant.parse(text(payload, "suppliedAt"))),
+                text(payload, "supplierTin"),
+                // The till sends an empty string for a walk-in, because the outbox payload is a
+                // flat map. Empty and absent mean the same thing here: no VAT-registered purchaser.
+                purchaserTin == null || purchaserTin.isBlank() ? null : purchaserTin,
+                number(payload, "totalExclVatMinor"),
+                number(payload, "vatMinor"),
+                number(payload, "totalInclVatMinor"));
     }
 
     // -------------------------------------------------------------------------- sale
@@ -111,9 +154,9 @@ public class SyncIngestService {
                             client_uuid, tenant_id, branch_code, terminal_code, invoice_number,
                             subtotal_minor, discount_minor, tax_minor, total_minor,
                             tax_mode, tax_rate_bp, sold_at, rounding_adjustment_minor, change_minor,
-                            shift_client_uuid)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT (client_uuid) DO UPDATE SET client_uuid = excluded.client_uuid
+                            shift_client_uuid, customer_client_uuid)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET client_uuid = excluded.client_uuid
                         RETURNING id
                         """,
                         Long.class,
@@ -135,7 +178,10 @@ public class SyncIngestService {
                         optionalNumber(payload, "changeMinor"),
                         // Null for a till that predates M2-01, whose sales genuinely had no
                         // shift. Same tolerance the two fields above get.
-                        optionalUuid(payload, "shiftClientUuid"));
+                        optionalUuid(payload, "shiftClientUuid"),
+                        // Null for the overwhelming majority of sales, and for every till that
+                        // predates M3-11. Same tolerance as the two fields above.
+                        optionalUuid(payload, "customerClientUuid"));
 
         // Movements are keyed on their own uuid, so they are ingested before the immutability
         // check below rather than after it. Two reasons: the upsert is already a no-op on
@@ -217,6 +263,18 @@ public class SyncIngestService {
      * historical fact, and the only correct response to being told about it twice is silence.
      */
     private void ingestMovements(long tenantId, JsonNode payload) {
+        ingestMovementsAt(tenantId, payload, text(payload, "soldAt"));
+    }
+
+    /**
+     * The same insert for every document that moves stock.
+     *
+     * <p>Parameterised on the timestamp only, because that is genuinely all that differs: a sale
+     * says {@code soldAt} and a goods receipt says {@code receivedAt}, and the rows they write are
+     * otherwise identical. Two copies of this would be two places for the {@code DO NOTHING} to be
+     * forgotten, and the one that was forgotten would double a shop's stock on a retry.
+     */
+    private void ingestMovementsAt(long tenantId, JsonNode payload, String occurredAtText) {
         JsonNode movements = payload.get("movements");
         if (movements == null || !movements.isArray()) {
             // A till older than M1-15 sends none. Its sale still ingests — the same tolerance
@@ -225,7 +283,7 @@ public class SyncIngestService {
         }
 
         String branchCode = text(payload, "branchCode");
-        Timestamp occurredAt = Timestamp.from(Instant.parse(text(payload, "soldAt")));
+        Timestamp occurredAt = Timestamp.from(Instant.parse(occurredAtText));
 
         for (JsonNode movement : movements) {
             jdbc.update(
@@ -234,7 +292,7 @@ public class SyncIngestService {
                         client_uuid, tenant_id, branch_code, product_client_uuid,
                         qty_delta, reason, occurred_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (client_uuid) DO NOTHING
+                    ON CONFLICT (tenant_id, client_uuid) DO NOTHING
                     """,
                     UUID.fromString(text(movement, "clientUuid")),
                     tenantId,
@@ -245,6 +303,33 @@ public class SyncIngestService {
                     occurredAt);
         }
     }
+
+    // ---------------------------------------------------------------- goods receipts
+
+    /**
+     * A delivery (M3-04). Only its <em>movements</em> land here.
+     *
+     * <h2>Why the document itself is not stored cloud-side yet</h2>
+     *
+     * What the cloud needs from a goods receipt today is the one thing §A insists on: the movements
+     * that change stock on hand. There is no cloud reader for the document — the owner console's
+     * purchase and margin reporting is M4-06 — and a table with no reader is a schema decision made
+     * without the question that should shape it. The movements carry their own {@code client_uuid}
+     * and insert with {@code DO NOTHING}, so redelivery adds nothing and the outbox row drains
+     * cleanly rather than backing off forever as an unsupported kind.
+     *
+     * <p>When the console does need the document, it arrives as a cloud migration and a widening of
+     * this method. Nothing about the till changes, because the payload already carries the supplier,
+     * the reference and the total.
+     */
+    private void ingestGoodsReceipt(long tenantId, JsonNode payload) {
+        ingestMovementsAt(tenantId, payload, text(payload, "receivedAt"));
+    }
+
+    // Note the stock_adjustment case above takes the same path with no wrapper of its own. Its
+    // reason code and note stay on the till for now, for the same reason a goods receipt's document
+    // does: stock on hand is what the console needs today, and the shrinkage report that wants the
+    // reasons is M4-06. What must not happen is the outbox row having nowhere to go (see below).
 
     // ------------------------------------------------------------------------- shift
 
@@ -270,7 +355,7 @@ public class SyncIngestService {
                     opened_at, opening_float_minor, closed_at, counted_cash_minor,
                     expected_cash_minor, variance_minor, variance_reason, variance_note)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (client_uuid) DO UPDATE SET
+                ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET
                     status              = excluded.status,
                     closed_at           = excluded.closed_at,
                     counted_cash_minor  = excluded.counted_cash_minor,
@@ -325,7 +410,7 @@ public class SyncIngestService {
                     client_uuid, tenant_id, branch_code, shift_client_uuid,
                     kind, amount_minor, reason_code, note, occurred_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (client_uuid) DO NOTHING
+                ON CONFLICT (tenant_id, client_uuid) DO NOTHING
                 """,
                 clientUuid,
                 tenantId,
@@ -359,7 +444,7 @@ public class SyncIngestService {
                             shift_client_uuid, sale_client_uuid, credit_note_number,
                             total_minor, tax_minor, rounding_adjustment_minor, refunded_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT (client_uuid) DO UPDATE SET client_uuid = excluded.client_uuid
+                        ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET client_uuid = excluded.client_uuid
                         RETURNING id
                         """,
                         Long.class,
@@ -458,7 +543,7 @@ public class SyncIngestService {
                         client_uuid, tenant_id, branch_code, product_client_uuid,
                         qty_delta, reason, occurred_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (client_uuid) DO NOTHING
+                    ON CONFLICT (tenant_id, client_uuid) DO NOTHING
                     """,
                     UUID.fromString(text(movement, "clientUuid")),
                     tenantId,
@@ -525,5 +610,115 @@ public class SyncIngestService {
     private static String describe(Exception e) {
         String message = e.getMessage();
         return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;
+    }
+
+    // ------------------------------------------------- catalogue, staff, customers (M3-12)
+
+    /**
+     * The product as the shop holds it now.
+     *
+     * <h2>The whole row, so order does not matter</h2>
+     *
+     * Every other aggregate here was immutable and its upsert is a deliberate no-op. A product is
+     * not: a price changes and the row is delivered again. Because each delivery carries the entire
+     * state rather than a change, redelivery is still free and arrival order still does not matter
+     * — two edits made minutes apart by the same shop converge on whichever landed second, which is
+     * the shop's own latest word either way.
+     *
+     * <p>The one thing this must never be used for is re-deriving what an old sale charged. The
+     * price on a sale line was stamped at the time (M1-05); this column moves.
+     */
+    private void upsertProduct(long tenantId, UUID clientUuid, JsonNode payload) {
+        Long productId =
+                jdbc.queryForObject(
+                        """
+                        INSERT INTO products (
+                            client_uuid, tenant_id, sku, name, price_minor, tax_mode, tax_rate_bp,
+                            category, active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET
+                            sku = excluded.sku,
+                            name = excluded.name,
+                            price_minor = excluded.price_minor,
+                            tax_mode = excluded.tax_mode,
+                            tax_rate_bp = excluded.tax_rate_bp,
+                            category = excluded.category,
+                            active = excluded.active
+                        RETURNING id
+                        """,
+                        Long.class,
+                        clientUuid,
+                        tenantId,
+                        text(payload, "sku"),
+                        text(payload, "name"),
+                        number(payload, "priceMinor"),
+                        text(payload, "taxMode"),
+                        (int) number(payload, "taxRateBp"),
+                        optionalText(payload, "category"),
+                        payload.path("active").asBoolean(true));
+
+        // Replaced wholesale rather than merged: a barcode removed at the shop has to disappear
+        // here too, and a merge has no way to say so. The list that arrived is the truth.
+        jdbc.update("DELETE FROM product_barcodes WHERE product_id = ?", productId);
+        JsonNode barcodes = payload.path("barcodes");
+        for (int i = 0; i < barcodes.size(); i++) {
+            jdbc.update(
+                    "INSERT INTO product_barcodes (product_id, barcode, is_primary) VALUES (?, ?, ?)",
+                    productId,
+                    barcodes.get(i).asText(),
+                    i == 0);
+        }
+    }
+
+    /**
+     * Staff, so the console can name whoever did something.
+     *
+     * <p>There is no {@code pin_hash} column to write into and the payload carries none. The cloud
+     * holds no credential, which is why offline auth (M3-09) is entirely local — a till that could
+     * check a PIN against the cloud would need the cloud to hold something worth stealing.
+     */
+    private void upsertUser(long tenantId, UUID clientUuid, JsonNode payload) {
+        jdbc.update(
+                """
+                INSERT INTO users (client_uuid, tenant_id, code, display_name, role, active)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET
+                    code = excluded.code,
+                    display_name = excluded.display_name,
+                    role = excluded.role,
+                    active = excluded.active
+                """,
+                clientUuid,
+                tenantId,
+                text(payload, "code"),
+                text(payload, "displayName"),
+                text(payload, "role"),
+                payload.path("active").asBoolean(true));
+    }
+
+    /**
+     * Customers, by name and number only.
+     *
+     * <p>No email and no note: neither has a reader in the console, and personal data copied into a
+     * second jurisdiction because it might one day be useful is exactly what M5-10 will have to
+     * undo. The phone is not unique here either — uniqueness is a rule the shop enforces on its own
+     * database, and the cloud rejecting a row over it would stall a backlog on a conflict only the
+     * shop can resolve.
+     */
+    private void upsertCustomer(long tenantId, UUID clientUuid, JsonNode payload) {
+        jdbc.update(
+                """
+                INSERT INTO customers (client_uuid, tenant_id, name, phone, active)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET
+                    name = excluded.name,
+                    phone = excluded.phone,
+                    active = excluded.active
+                """,
+                clientUuid,
+                tenantId,
+                text(payload, "name"),
+                optionalText(payload, "phone"),
+                payload.path("active").asBoolean(true));
     }
 }

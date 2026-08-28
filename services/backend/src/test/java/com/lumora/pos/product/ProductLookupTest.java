@@ -32,6 +32,14 @@ class ProductLookupTest {
 
     @BeforeEach
     void seed() {
+        // ProductLookup.active() and search() are not tenant-scoped, deliberately: a desktop
+        // database holds exactly one tenant, and making the hot path of every scan look one up
+        // first buys nothing. This test breaks that invariant by seeding a second tenant, so
+        // whatever another test committed would otherwise show up in the counts below and make
+        // these assertions depend on class execution order. Retiring everything already there
+        // costs one statement and is rolled back with the rest.
+        jdbc.update("UPDATE products SET active = false");
+
         tenantId =
                 jdbc.queryForObject(
                         """

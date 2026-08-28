@@ -14,6 +14,9 @@ import {
 } from '@lumora/domain';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { OperatorPrompt } from '@/components/OperatorPrompt';
+import { useOperator } from '@/lib/useOperator';
+
 /**
  * The returns desk (M2-06 … M2-10) — everything behind F9.
  *
@@ -97,7 +100,8 @@ export function RefundOverlay({
   const [selected, setSelected] = useState(0);
   const [qtyBuffer, setQtyBuffer] = useState('');
   const [picked, setPicked] = useState<Map<number, RefundLineRequest>>(new Map());
-  const [pinBuffer, setPinBuffer] = useState('');
+  // M3-08. A named user with AUTHORISE_REFUND, not a shop-wide PIN.
+  const manager = useOperator();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -189,7 +193,8 @@ export function RefundOverlay({
           branchCode,
           terminalCode,
           invoiceNumber: sale.invoiceNumber,
-          managerPin: pinBuffer,
+          managerCode: manager.code,
+          managerPin: manager.pin,
           totalMinor: summary.totalMinor,
           taxMinor: summary.taxMinor,
           roundingAdjustmentMinor: allocation.roundingAdjustmentMinor,
@@ -224,14 +229,16 @@ export function RefundOverlay({
         tenders: allocation.tenders.map((t) => ({ kind: t.kind, amountMinor: t.amountMinor })),
       });
     } catch (e) {
-      // Back to the PIN field with the return intact: a wrong PIN must not cost the cashier the
-      // whole basket they just entered.
-      setPinBuffer('');
+      // Back to an empty code and PIN with the return intact: a refusal must not cost the
+      // cashier the whole basket they just entered. Both fields clear, not just the PIN — the
+      // refusal does not say which half was wrong, so leaving the code standing would suggest it
+      // was the right one.
+      manager.reset();
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
-  }, [allocation, branchCode, busy, onDone, pinBuffer, sale, summary, terminalCode]);
+  }, [allocation, branchCode, busy, manager, onDone, sale, summary, terminalCode]);
 
   const toggleLine = useCallback(() => {
     const line = sale?.lines[selected];
@@ -301,7 +308,7 @@ export function RefundOverlay({
       if (event.key === 'Escape') {
         event.preventDefault();
         if (step === 'PIN') {
-          setPinBuffer('');
+          manager.reset();
           setStep('LINES');
         } else if (step === 'LINES') {
           setStep('LOOKUP');
@@ -376,16 +383,19 @@ export function RefundOverlay({
       }
 
       if (step === 'PIN') {
-        if (event.key >= '0' && event.key <= '9' && event.key.length === 1) {
+        // Enter is not the hook's to take: on the code field it means "now the PIN", and only on
+        // the PIN does it mean "authorise". F12 always submits, matching tender.
+        if (event.key === 'Enter' && manager.field === 'CODE') {
           event.preventDefault();
-          setPinBuffer((current) => (current.length >= 12 ? current : current + event.key));
-        } else if (event.key === 'Backspace') {
-          event.preventDefault();
-          setPinBuffer((current) => current.slice(0, -1));
-        } else if (event.key === 'Enter' || event.key === 'F12') {
-          event.preventDefault();
-          void commit();
+          manager.advance();
+          return;
         }
+        if (event.key === 'Enter' || event.key === 'F12') {
+          event.preventDefault();
+          if (manager.ready) void commit();
+          return;
+        }
+        manager.onKey(event);
       }
     }
     document.addEventListener('keydown', onKey, true);
@@ -395,6 +405,7 @@ export function RefundOverlay({
     commit,
     cycleReason,
     lookup,
+    manager,
     onCancel,
     sale,
     step,
@@ -519,12 +530,10 @@ export function RefundOverlay({
 
         {step === 'PIN' && (
           <>
-            <p className="text-ink-3 text-sm">A manager must authorise this refund.</p>
-            <div className="border-hair rounded border p-4 text-center">
-              <div className="lum-money text-ink text-4xl tracking-[0.5em]">
-                {'•'.repeat(pinBuffer.length) || '––––'}
-              </div>
-            </div>
+            <OperatorPrompt
+              operator={manager}
+              label="A supervisor or manager must authorise this refund."
+            />
             {summary && !('error' in summary) && (
               <div className="flex items-baseline justify-between">
                 <span className="text-ink-3 text-sm">Refunding</span>
@@ -571,7 +580,8 @@ export function RefundOverlay({
           )}
           {step === 'PIN' && (
             <>
-              <span>manager PIN</span>
+              <span>user code, then PIN</span>
+              <span>Tab switch</span>
               <span className="text-accent font-semibold">
                 Enter {busy ? 'working…' : 'authorise'}
               </span>

@@ -48,6 +48,27 @@ class SyncWorkerTest {
         List<UUID> rejectAll = new ArrayList<>();
         int pushCount = 0;
         SyncBatch lastBatch;
+        int entitlementCount = 0;
+        Entitlement entitlement =
+                new Entitlement(
+                        true,
+                        "trial",
+                        "Trial",
+                        java.time.Instant.now().minusSeconds(60),
+                        java.time.Instant.now().plusSeconds(86_400),
+                        1,
+                        3,
+                        List.of("back_office"),
+                        java.time.Instant.now());
+
+        @Override
+        public Entitlement fetchEntitlement() {
+            entitlementCount++;
+            if (!reachable) {
+                throw new CloudUnreachableException("connection refused (test)", null);
+            }
+            return entitlement;
+        }
 
         @Override
         public SyncBatchResult push(SyncBatch batch) {
@@ -182,13 +203,22 @@ class SyncWorkerTest {
         assertThat(worker.pendingCount()).isEqualTo(1);
     }
 
+    /**
+     * The inverse of what this asserted until M4-01.
+     *
+     * <p>The batch used to name its own tenant, and the cloud believed it. Which shop is pushing is
+     * now settled by the bearer token on the request, so the payload carries nothing about it — and
+     * the drain has no way to get that wrong, because there is no field to fill in.
+     */
     @Test
-    void theBatchCarriesTheTenantSoTheCloudKnowsWhoseSaleItIs() {
+    void theBatchCarriesNoTenantForTheCloudToTrust() {
         enqueue();
         worker.drainOnce();
 
-        assertThat(cloud.lastBatch.tenantClientUuid()).isEqualTo(TENANT);
-        assertThat(cloud.lastBatch.tenantName()).isEqualTo("Kandy Stores");
+        assertThat(cloud.lastBatch.items()).isNotEmpty();
+        assertThat(SyncBatch.class.getRecordComponents())
+                .extracting(java.lang.reflect.RecordComponent::getName)
+                .containsExactly("items");
     }
 
     @Test

@@ -1,6 +1,11 @@
 package com.lumora.pos.invoice;
 
 import com.lumora.pos.web.RejectedException;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.TextStyle;
+import java.util.Locale;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -37,7 +42,16 @@ public class InvoiceNumberAllocator {
     /** The document types a terminal counts. Matches {@code ck_invoice_counters_doc_type}. */
     public enum DocType {
         INVOICE("%s-%s-%06d"),
-        CREDIT_NOTE("%s-%s-CN-%06d");
+        CREDIT_NOTE("%s-%s-CN-%06d"),
+
+        /**
+         * The IRD tax invoice (M5-09). Its format is not a constant — it carries the year and
+         * month of issue — so this one is built by {@link #taxInvoiceNumber} and the template here
+         * is unused. It is a member of this enum anyway because what matters is that it counts on
+         * its own row in {@code invoice_counters}: a tax invoice must never consume a receipt
+         * number, for the reason V108 gives about credit notes.
+         */
+        TAX_INVOICE("%s-%s-%06d");
 
         private final String format;
 
@@ -45,6 +59,15 @@ public class InvoiceNumberAllocator {
             this.format = format;
         }
     }
+
+    /** Gazette 2481/22 §4.1(a)(v). */
+    private static final int MAX_SERIAL_LENGTH = 40;
+
+    /** Gazette 2481/22 §4.1(a)(iii): "at least one digit but not more than fifteen". */
+    private static final int MAX_QQQQ_LENGTH = 15;
+
+    /** See {@link #taxInvoiceNumber} on why this is a hyphen and not an underscore. */
+    private static final String SEPARATOR = "-";
 
     private static final long DEFAULT_RANGE_START = 1;
 
@@ -64,6 +87,21 @@ public class InvoiceNumberAllocator {
 
     public String allocate(
             long tenantId, long branchId, String branchCode, String terminalCode, DocType docType) {
+        return allocate(tenantId, branchId, branchCode, terminalCode, docType, Instant.now());
+    }
+
+    /**
+     * @param issuedAt used only by {@link DocType#TAX_INVOICE}, whose serial carries the year and
+     *     month of issue. Passed in rather than read from a clock here so a caller that has already
+     *     stamped a document's issue time cannot end up with a number naming a different month.
+     */
+    public String allocate(
+            long tenantId,
+            long branchId,
+            String branchCode,
+            String terminalCode,
+            DocType docType,
+            Instant issuedAt) {
         long defaultRangeEnd = DEFAULT_RANGE_START + DEFAULT_RANGE_SIZE - 1;
 
         // One atomic statement: two concurrent documents cannot be handed the same number. On
@@ -99,6 +137,57 @@ public class InvoiceNumberAllocator {
                             .formatted(docType.name(), terminalCode));
         }
 
+        if (docType == DocType.TAX_INVOICE) {
+            return taxInvoiceNumber(branchCode, terminalCode, sequence, issuedAt);
+        }
         return docType.format.formatted(branchCode, terminalCode, sequence);
+    }
+
+    /**
+     * The serial number Gazette 2481/22 §4.1(a) prescribes: {@code YYMMM-QQQQ-XXXXX}.
+     *
+     * <ul>
+     *   <li>{@code YY} — last two digits of the year the invoice is <em>issued</em>. Not the year
+     *       of supply: an invoice raised in January against December's delivery is a January
+     *       invoice.
+     *   <li>{@code MMM} — first three letters of the month, uppercase, in English.
+     *   <li>{@code QQQQ} — the gazette's free identifier for "branches, sections, units". Branch
+     *       and terminal code together, which is what makes this compatible with §A's per-terminal
+     *       blocks: each till carries its own {@code QQQQ}, so its numeric run is independent and
+     *       no till needs the network to know what another has issued.
+     *   <li>{@code XXXXX} — digits only, no letters or symbols. Zero-padded, which keeps it
+     *       numeric and makes a printed run sort.
+     * </ul>
+     *
+     * <p><b>The separator.</b> The gazette writes the format with underscores and then gives a
+     * worked example using hyphens — {@code 26JUL-BR03-1}. They cannot both be literal. Read as
+     * notation the underscores mark field boundaries and the example shows the rendered form, so
+     * the example wins here. What is unambiguous, and what this enforces, is the rule that
+     * actually binds: no spaces, at most forty characters.
+     */
+    static String taxInvoiceNumber(
+            String branchCode, String terminalCode, long sequence, Instant issuedAt) {
+        ZonedDateTime issued = issuedAt.atZone(ZoneId.systemDefault());
+        String yy = "%02d".formatted(issued.getYear() % 100);
+        String mmm = issued.getMonth().getDisplayName(TextStyle.SHORT, Locale.ENGLISH).toUpperCase(Locale.ROOT);
+
+        // §4.1(a)(iii) allows letters, digits or both, up to fifteen characters. Anything else a
+        // branch code might contain is dropped rather than printed: a separator inside QQQQ would
+        // make the number ambiguous to parse back apart.
+        String qqqq = (branchCode + terminalCode).toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+        if (qqqq.isEmpty()) {
+            throw new IllegalStateException(
+                    "Branch and terminal codes yield no alphanumeric characters for the invoice serial");
+        }
+        if (qqqq.length() > MAX_QQQQ_LENGTH) {
+            qqqq = qqqq.substring(0, MAX_QQQQ_LENGTH);
+        }
+
+        String number = "%s%s%s%s%s%06d".formatted(yy, mmm, SEPARATOR, qqqq, SEPARATOR, sequence);
+        if (number.length() > MAX_SERIAL_LENGTH) {
+            throw new IllegalStateException(
+                    "Tax invoice serial exceeds the gazette's 40-character limit: " + number);
+        }
+        return number;
     }
 }

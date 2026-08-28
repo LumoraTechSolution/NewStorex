@@ -50,12 +50,30 @@ export interface ReceiptTender {
 export interface ReceiptData {
   readonly storeName: string;
   readonly tagline: string;
+  /**
+   * The shop's street address, printed under the tagline (M5-09).
+   *
+   * Required, and required as a *value* rather than an optional field: a tax invoice has to
+   * carry the supplier's address, so a caller that has not thought about it should fail to
+   * compile. Newlines split it into printed lines; anything longer than the paper is wrapped
+   * at word boundaries here rather than left to the printer, which breaks mid-word. An empty
+   * string prints nothing, which is the escape hatch for a shop that has not set one yet.
+   */
+  readonly storeAddress: string;
   readonly branchName: string;
   readonly branchCode: string;
   readonly terminalCode: string;
   readonly invoiceNumber: string;
   /** ISO instant. Printed as the shop PC's local time — the till's clock is the shop's clock. */
   readonly soldAt: string;
+  /**
+   * The customer attached to the sale (M3-11), or `null` for the walk-in that most sales are.
+   *
+   * The label prints either way. Left blank it is a line somebody can write a name on, which
+   * is what a customer asking for a tax invoice after the fact actually needs; omitting the
+   * line entirely would mean reprinting the receipt to get one.
+   */
+  readonly customerName: string | null;
   readonly lines: readonly ReceiptLine[];
   readonly subtotalMinor: number;
   readonly discountMinor: number;
@@ -94,12 +112,17 @@ export function buildReceipt(data: ReceiptData, width = DEFAULT_WIDTH): Uint8Arr
     esc.line(data.storeName),
     esc.doubleSize(false),
   );
-  chunks.push(esc.bold(false), esc.line(data.tagline), esc.line());
+  chunks.push(esc.bold(false), esc.line(data.tagline));
+  for (const text of wrap(data.storeAddress, width)) {
+    chunks.push(esc.line(text));
+  }
+  chunks.push(esc.line());
 
   chunks.push(esc.align('left'));
   chunks.push(esc.line(twoColumn(data.branchName, `Till ${data.terminalCode}`, width)));
   chunks.push(esc.line(`Invoice: ${data.invoiceNumber}`));
   chunks.push(esc.line(formatSoldAt(data.soldAt)));
+  chunks.push(esc.line(customerLine(data.customerName, width)));
   chunks.push(esc.line(divider(width)));
 
   for (const line of data.lines) {
@@ -286,6 +309,47 @@ function formatSoldAt(iso: string): string {
     minute: '2-digit',
     hour12: false,
   }).format(date);
+}
+
+/**
+ * `Customer: <name>`, or the bare label when nobody is attached.
+ *
+ * Clipped rather than wrapped: a name long enough to overflow 42 columns is a data-entry
+ * accident, and a second line of it would push the whole header down on every receipt that
+ * had one.
+ */
+function customerLine(name: string | null, width: number): string {
+  const label = 'Customer:';
+  if (name === null || name.trim().length === 0) return label;
+  return truncate(`${label} ${name.trim()}`, width);
+}
+
+/**
+ * Word-wraps to the paper width, splitting on explicit newlines first so a two-line address
+ * stays two lines. A word longer than the paper is hard-broken — there is nowhere else for it
+ * to go, and dropping it would lose part of an address.
+ */
+function wrap(text: string, width: number): string[] {
+  const out: string[] = [];
+  for (const paragraph of text.split('\n')) {
+    let current = '';
+    for (const word of paragraph.trim().split(/\s+/).filter(Boolean)) {
+      if (current.length === 0) {
+        current = word;
+      } else if (current.length + 1 + word.length <= width) {
+        current += ` ${word}`;
+      } else {
+        out.push(current);
+        current = word;
+      }
+      while (current.length > width) {
+        out.push(current.slice(0, width));
+        current = current.slice(width);
+      }
+    }
+    if (current.length > 0) out.push(current);
+  }
+  return out;
 }
 
 function truncate(s: string, width: number): string {

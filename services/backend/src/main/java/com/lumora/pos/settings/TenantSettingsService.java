@@ -1,15 +1,18 @@
 package com.lumora.pos.settings;
 
-import com.lumora.pos.web.RejectedException;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Per-shop policy: the cash variance threshold (D1) and the manager PIN (M2-07).
+ * Per-shop policy: the cash variance threshold (D1).
+ *
+ * <p>This class also held the shop-wide manager PIN (M2-07) until M3-08 replaced it with real
+ * users. The hash moved to {@code users.pin_hash} in V109 and the column is gone — see
+ * {@code UserService}, and see the V109 header for why two credential stores for one gate is a
+ * bug waiting for a rotation.
  *
  * <h2>D1, resolved</h2>
  *
@@ -18,20 +21,6 @@ import org.springframework.transaction.annotation.Transactional;
  * drawer is out": a fixed LKR 100 is noise to one and an obstruction to the other, and a gate that
  * fires on every shift is a gate cashiers learn to click through. The default is LKR 100.00, which
  * suits the grocer, and the row exists so the jeweller can change it without a migration.
- *
- * <h2>An unset PIN is a closed gate, not an open one</h2>
- *
- * {@code manager_pin_hash} is NULL until a shop sets one, and {@link #verifyManagerPin} refuses
- * every refund while it is. That is the direction a default must fail in: a shop that never got
- * round to configuring a manager PIN gets refunds it cannot process — visible, fixable, and
- * loudly wrong — rather than refunds anybody can authorise, which looks exactly like working
- * software right up until the money is gone.
- *
- * <p>BCrypt rather than a plain hash because a PIN is four to six digits: the entire keyspace is a
- * few hundred thousand entries, and a fast hash would fall to a laptop in seconds. BCrypt's work
- * factor is what makes the local database file being readable — which, on a shop PC, it is — not
- * the same thing as the PIN being known. This is not a substitute for M3-09's real auth; it is the
- * smallest thing that is not actively misleading until M3-08 brings users.
  */
 @Service
 public class TenantSettingsService {
@@ -40,7 +29,6 @@ public class TenantSettingsService {
     public static final long DEFAULT_VARIANCE_THRESHOLD_MINOR = 10_000L;
 
     private final JdbcTemplate jdbc;
-    private final PasswordEncoder encoder = new BCryptPasswordEncoder();
 
     public TenantSettingsService(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -64,54 +52,68 @@ public class TenantSettingsService {
     }
 
     /**
-     * M2-07. Throws unless the PIN matches the shop's manager PIN.
+     * The shop's identity as the VAT registration certificate records it (M5-09).
      *
-     * <p>Deliberately not a boolean. A method returning true/false invites {@code if (ok) { … }}
-     * with no else, and a refund authorised by a forgotten branch is precisely the bug this gate
-     * exists to prevent. The only way past this call is for the PIN to be right.
+     * <p>Unlike the variance threshold above, this has <b>no default and no fallback</b>. Missing
+     * settings there mean a shift closes against a sensible number; missing settings here would
+     * mean a tax invoice printed with somebody's guess at a TIN, which the purchaser then files and
+     * claims input credit against. Empty is returned and {@code TaxInvoiceService} refuses to
+     * issue — an unconfigured shop must not be able to produce a legal document.
      */
     @Transactional(readOnly = true)
-    public void verifyManagerPin(long tenantId, String pin) {
-        if (pin == null || pin.isBlank()) {
-            throw new RejectedException("A manager PIN is required to authorise a refund");
-        }
-
-        List<String> hashes =
-                jdbc.queryForList(
+    public Optional<SupplierIdentity> supplierIdentity(long tenantId) {
+        List<SupplierIdentity> found =
+                jdbc.query(
                         """
-                        SELECT manager_pin_hash FROM tenant_settings
-                         WHERE tenant_id = ? AND manager_pin_hash IS NOT NULL
+                        SELECT s.supplier_tin,
+                               coalesce(s.supplier_registered_name, t.name) AS registered_name,
+                               s.supplier_address
+                          FROM tenant_settings s
+                          JOIN tenants t ON t.id = s.tenant_id
+                         WHERE s.tenant_id = ?
                         """,
-                        String.class,
+                        (rs, row) ->
+                                new SupplierIdentity(
+                                        rs.getString("supplier_tin"),
+                                        rs.getString("registered_name"),
+                                        rs.getString("supplier_address")),
                         tenantId);
-        if (hashes.isEmpty()) {
-            throw new RejectedException(
-                    "No manager PIN has been set for this shop, so no refund can be authorised. "
-                            + "Set one in the back office before processing returns.");
-        }
-        if (!encoder.matches(pin, hashes.get(0))) {
-            throw new RejectedException("Manager PIN not recognised");
-        }
+
+        // A row that exists but has not been filled in is the same as no row: all three are
+        // required on the face of the invoice, so two out of three is not a partial success.
+        return found.stream().filter(SupplierIdentity::isComplete).findFirst();
+    }
+
+    /** Set by M5-03's first-run wizard, and by the back office until it exists. */
+    @Transactional
+    public void setSupplierIdentity(long tenantId, SupplierIdentity identity) {
+        jdbc.update(
+                """
+                INSERT INTO tenant_settings (tenant_id, supplier_tin, supplier_registered_name, supplier_address)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (tenant_id) DO UPDATE SET
+                    supplier_tin = excluded.supplier_tin,
+                    supplier_registered_name = excluded.supplier_registered_name,
+                    supplier_address = excluded.supplier_address
+                """,
+                tenantId,
+                identity.tin(),
+                identity.registeredName(),
+                identity.address());
     }
 
     /**
-     * Sets or replaces the shop's manager PIN.
-     *
-     * <p>Used by the dev seed today and by the back office from M3-08. There is deliberately no
-     * HTTP endpoint for it in M2: an unauthenticated loopback API that can set the very credential
-     * guarding refunds would be a gate with its own handle on the outside.
+     * Gazette 2481/22 §2.1 — the three things that must appear in the top left-hand corner of a
+     * tax invoice. The telephone number §2.1(d) allows is optional and deliberately not here.
      */
-    @Transactional
-    public void setManagerPin(long tenantId, String pin) {
-        if (pin == null || pin.length() < 4) {
-            throw new RejectedException("A manager PIN must be at least 4 digits");
+    public record SupplierIdentity(String tin, String registeredName, String address) {
+
+        public boolean isComplete() {
+            return notBlank(tin) && notBlank(registeredName) && notBlank(address);
         }
-        jdbc.update(
-                """
-                INSERT INTO tenant_settings (tenant_id, manager_pin_hash) VALUES (?, ?)
-                ON CONFLICT (tenant_id) DO UPDATE SET manager_pin_hash = excluded.manager_pin_hash
-                """,
-                tenantId,
-                encoder.encode(pin));
+
+        private static boolean notBlank(String value) {
+            return value != null && !value.isBlank();
+        }
     }
 }

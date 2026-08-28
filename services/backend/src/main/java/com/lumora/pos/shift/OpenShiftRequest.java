@@ -16,6 +16,11 @@ import java.util.UUID;
  *     opened twice — the same contract as a sale.
  * @param openingCount the float, counted note by note. Required: a float typed as a single figure
  *     is a number nobody checked, and the whole shift's variance rests on it being right.
+ * @param operatorCode who is taking the till, and {@code operatorPin} their PIN (M3-08). Every
+ *     sale rung up during this shift is attributed to them: the shift is the session, because the
+ *     till already refuses to trade without one and a single till has one person behind it at a
+ *     time. Authenticated here rather than trusted, so a shift can never name somebody who was not
+ *     stood at the keypad.
  * @param openingFloatMinor optional, and only ever a checksum. When present it must equal the sum
  *     of {@code openingCount}; it exists so a terminal bug that adds the count up differently from
  *     the backend is caught at the point it happens rather than at close, eight hours later, as an
@@ -25,6 +30,8 @@ public record OpenShiftRequest(
         @NotNull UUID clientUuid,
         @NotBlank String branchCode,
         @NotBlank String terminalCode,
+        @NotBlank String operatorCode,
+        @NotBlank String operatorPin,
         Instant openedAt,
         Long openingFloatMinor,
         @NotEmpty @Valid List<DenominationCount> openingCount) {}

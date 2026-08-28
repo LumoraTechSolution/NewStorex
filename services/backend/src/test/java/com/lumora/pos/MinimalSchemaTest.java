@@ -84,18 +84,37 @@ class MinimalSchemaTest {
 
     // ------------------------------------------------------- movements, not balances
 
+    /**
+     * Levels are the sum of movements and are never a stored column.
+     *
+     * <h2>Base tables only, and that narrowing arrived with M3-07</h2>
+     *
+     * This guard was written in M0, before the schema had any views, and it read every column in
+     * {@code information_schema.columns} — which includes a view's. So the first view that computed
+     * a level failed it: {@code stock_on_hand.qty_on_hand} (V114), which is the literal
+     * {@code sum(qty_delta)} this rule <em>asks</em> for.
+     *
+     * <p>Restricting to {@code BASE TABLE} does not weaken it. The thing being guarded against is a
+     * stored figure that a write path has to remember to update, and a view has no storage to
+     * forget: it is recomputed on every read and cannot drift from the movements it is derived from.
+     * A materialised view would be a different argument — it does have storage — and would still be
+     * caught here, which is deliberate.
+     */
     @Test
     void noTableStoresAStockLevel() {
         List<String> offenders =
                 jdbc.queryForList(
                         """
-                        SELECT table_name || '.' || column_name
-                        FROM information_schema.columns
-                        WHERE table_schema = 'public'
+                        SELECT c.table_name || '.' || c.column_name
+                        FROM information_schema.columns c
+                        JOIN information_schema.tables t
+                          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+                        WHERE c.table_schema = 'public'
+                          AND t.table_type = 'BASE TABLE'
                           AND (
-                            column_name IN ('quantity_on_hand', 'qty_on_hand', 'stock_level',
-                                            'stock_on_hand', 'balance', 'current_stock')
-                            OR column_name LIKE '%_balance'
+                            c.column_name IN ('quantity_on_hand', 'qty_on_hand', 'stock_level',
+                                              'stock_on_hand', 'balance', 'current_stock')
+                            OR c.column_name LIKE '%_balance'
                           )
                         """,
                         String.class);
@@ -103,9 +122,30 @@ class MinimalSchemaTest {
         assertThat(offenders)
                 .as(
                         "Stock and money levels are the SUM of movements, never a stored column. "
-                                + "If a rollup is needed for speed, make it a materialised view — "
-                                + "something the database maintains, not something a writer can forget.")
+                                + "A plain view computing the sum is fine and is how M3-07 does it; "
+                                + "anything with storage behind it - a table, or a materialised view "
+                                + "- is a figure a writer can forget to update.")
                 .isEmpty();
+    }
+
+    /**
+     * And the sanctioned shape actually exists, so the rule above is satisfied by something rather
+     * than by nothing.
+     *
+     * <p>Without this, deleting {@code stock_on_hand} would make the guard pass more easily, which
+     * is the wrong direction for a test to fail open in.
+     */
+    @Test
+    void onHandIsAvailableAsADerivedView() {
+        assertThat(
+                        jdbc.queryForList(
+                                """
+                                SELECT table_name FROM information_schema.tables
+                                 WHERE table_schema = 'public' AND table_type = 'VIEW'
+                                """,
+                                String.class))
+                .as("M3-07's single definition of Σ qty_delta")
+                .contains("stock_on_hand");
     }
 
     // ------------------------------------------------------------------------- money

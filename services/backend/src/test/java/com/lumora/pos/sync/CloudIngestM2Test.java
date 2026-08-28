@@ -6,7 +6,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import com.lumora.pos.cloud.TenantCredentialService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -26,12 +28,24 @@ import org.springframework.test.context.TestPropertySource;
         properties = "spring.datasource.url=jdbc:postgresql://127.0.0.1:5444/lumora_test_cloud")
 class CloudIngestM2Test {
 
-    private static final UUID TENANT = UUID.fromString("00000000-0000-4000-8000-0000000000ab");
     private static final UUID PRODUCT = UUID.fromString("00000000-0000-4000-8000-000000000166");
 
     @Autowired SyncIngestService ingest;
+    @Autowired TenantCredentialService credentials;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper objectMapper;
+
+    /**
+     * Provisioned per test rather than shared (M4-01). A tenant can no longer create itself by
+     * pushing, so every test needs one to exist first — and giving each its own is what keeps a
+     * test asserting on a running total from reading rows the previous test left behind.
+     */
+    private long tenantId;
+
+    @BeforeEach
+    void provisionTenant() {
+        tenantId = credentials.provision("Kandy Stores", "Till 1").tenantId();
+    }
 
     // ------------------------------------------------------------------------- shift
 
@@ -39,12 +53,12 @@ class CloudIngestM2Test {
     void aShiftArrivesOpenAndThenCloses() {
         UUID shiftUuid = UUID.randomUUID();
 
-        ingest.ingest(batch("shift", shiftUuid, openShiftPayload(shiftUuid)));
+        ingest.ingest(tenantId, batch("shift", shiftUuid, openShiftPayload(shiftUuid)));
         assertThat(status(shiftUuid)).isEqualTo("OPEN");
         assertThat(scalarLong("SELECT expected_cash_minor FROM shifts WHERE client_uuid = ?", shiftUuid))
                 .isNull();
 
-        ingest.ingest(batch("shift", shiftUuid, closedShiftPayload(shiftUuid)));
+        ingest.ingest(tenantId, batch("shift", shiftUuid, closedShiftPayload(shiftUuid)));
         assertThat(status(shiftUuid)).isEqualTo("CLOSED");
         assertThat(scalarLong("SELECT variance_minor FROM shifts WHERE client_uuid = ?", shiftUuid))
                 .isEqualTo(-15_000);
@@ -62,8 +76,8 @@ class CloudIngestM2Test {
     void anOpenRowArrivingAfterACloseCannotReopenTheShift() {
         UUID shiftUuid = UUID.randomUUID();
 
-        ingest.ingest(batch("shift", shiftUuid, closedShiftPayload(shiftUuid)));
-        SyncBatchResult late = ingest.ingest(batch("shift", shiftUuid, openShiftPayload(shiftUuid)));
+        ingest.ingest(tenantId, batch("shift", shiftUuid, closedShiftPayload(shiftUuid)));
+        SyncBatchResult late = ingest.ingest(tenantId, batch("shift", shiftUuid, openShiftPayload(shiftUuid)));
 
         // Accepted, not rejected: the delivery succeeded, it simply had nothing left to say.
         assertThat(late.accepted()).containsExactly(shiftUuid);
@@ -75,7 +89,7 @@ class CloudIngestM2Test {
     @Test
     void theDenominationCountTravelsWithTheShift() {
         UUID shiftUuid = UUID.randomUUID();
-        ingest.ingest(batch("shift", shiftUuid, closedShiftPayload(shiftUuid)));
+        ingest.ingest(tenantId, batch("shift", shiftUuid, closedShiftPayload(shiftUuid)));
 
         // One missing 5000 note reads very differently from a hundred missing coins, and the
         // console cannot ask an offline till for the detail later.
@@ -94,9 +108,9 @@ class CloudIngestM2Test {
     void aCashMovementKeepsItsSign() {
         UUID shiftUuid = UUID.randomUUID();
         UUID movementUuid = UUID.randomUUID();
-        ingest.ingest(batch("shift", shiftUuid, openShiftPayload(shiftUuid)));
+        ingest.ingest(tenantId, batch("shift", shiftUuid, openShiftPayload(shiftUuid)));
 
-        ingest.ingest(batch("cash_movement", movementUuid, cashMovementPayload(movementUuid, shiftUuid)));
+        ingest.ingest(tenantId, batch("cash_movement", movementUuid, cashMovementPayload(movementUuid, shiftUuid)));
 
         assertThat(scalarLong("SELECT amount_minor FROM cash_movements WHERE client_uuid = ?", movementUuid))
                 .isEqualTo(-400_000);
@@ -108,9 +122,9 @@ class CloudIngestM2Test {
         UUID movementUuid = UUID.randomUUID();
         SyncBatch batch = batch("cash_movement", movementUuid, cashMovementPayload(movementUuid, shiftUuid));
 
-        ingest.ingest(batch);
-        ingest.ingest(batch);
-        ingest.ingest(batch);
+        ingest.ingest(tenantId, batch);
+        ingest.ingest(tenantId, batch);
+        ingest.ingest(tenantId, batch);
 
         assertThat(count("SELECT count(*) FROM cash_movements WHERE client_uuid = ?", movementUuid))
                 .isEqualTo(1);
@@ -125,7 +139,7 @@ class CloudIngestM2Test {
         UUID movementUuid = UUID.randomUUID();
 
         SyncBatchResult result =
-                ingest.ingest(
+                ingest.ingest(tenantId, 
                         batch("refund", refundUuid, refundPayload(refundUuid, saleUuid, movementUuid, true)));
 
         assertThat(result.accepted()).containsExactly(refundUuid);
@@ -156,7 +170,7 @@ class CloudIngestM2Test {
         UUID orphanSale = UUID.randomUUID();
 
         SyncBatchResult result =
-                ingest.ingest(
+                ingest.ingest(tenantId, 
                         batch("refund", refundUuid, refundPayload(refundUuid, orphanSale, UUID.randomUUID(), true)));
 
         assertThat(result.rejected()).isEmpty();
@@ -169,7 +183,7 @@ class CloudIngestM2Test {
         UUID refundUuid = UUID.randomUUID();
         int before = count("SELECT count(*) FROM stock_movements WHERE product_client_uuid = ?", PRODUCT);
 
-        ingest.ingest(
+        ingest.ingest(tenantId, 
                 batch("refund", refundUuid, refundPayload(refundUuid, UUID.randomUUID(), null, false)));
 
         // Damaged goods are not inventory. A RETURN movement here would tell the owner they hold
@@ -185,9 +199,9 @@ class CloudIngestM2Test {
         SyncBatch batch =
                 batch("refund", refundUuid, refundPayload(refundUuid, UUID.randomUUID(), movementUuid, true));
 
-        ingest.ingest(batch);
-        ingest.ingest(batch);
-        ingest.ingest(batch);
+        ingest.ingest(tenantId, batch);
+        ingest.ingest(tenantId, batch);
+        ingest.ingest(tenantId, batch);
 
         assertThat(count(
                         "SELECT count(*) FROM refund_items WHERE refund_id = (SELECT id FROM refunds WHERE client_uuid = ?)",
@@ -314,9 +328,81 @@ class CloudIngestM2Test {
 
     // ------------------------------------------------------------------------ helpers
 
+    // ---------------------------------------------------------------- goods receipts
+
+    /**
+     * A delivery reaches the cloud as movements (M3-04).
+     *
+     * <p>The point of the test is that the outbox row <em>drains</em>. An aggregate kind the ingest
+     * does not know is rejected and backed off forever, which is the M2 trap recorded in §G — the
+     * till looks fine, the cloud silently never gets the shop's stock, and the symptom reads like a
+     * code bug in the sync loop.
+     */
+    @Test
+    void aGoodsReceiptArrivesAsStockGoingOnTheShelf() {
+        UUID receiptUuid = UUID.randomUUID();
+        UUID movementUuid = UUID.randomUUID();
+
+        var result = ingest.ingest(tenantId, batch("goods_receipt", receiptUuid, receiptPayload(receiptUuid, movementUuid)));
+
+        assertThat(result.rejected()).isEmpty();
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT qty_delta FROM stock_movements WHERE client_uuid = ?",
+                                Integer.class,
+                                movementUuid))
+                .isEqualTo(24);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT reason FROM stock_movements WHERE client_uuid = ?",
+                                String.class,
+                                movementUuid))
+                .isEqualTo("RECEIVE");
+    }
+
+    /**
+     * Redelivery adds nothing.
+     *
+     * <p>On hand is Σ qty_delta, so a batch that arrives twice and inserts twice does not duplicate
+     * a row somebody can spot — it silently doubles the shop's stock.
+     */
+    @Test
+    void aRedeliveredGoodsReceiptDoesNotAddTheStockAgain() {
+        UUID receiptUuid = UUID.randomUUID();
+        UUID movementUuid = UUID.randomUUID();
+        String payload = receiptPayload(receiptUuid, movementUuid);
+
+        ingest.ingest(tenantId, batch("goods_receipt", receiptUuid, payload));
+        ingest.ingest(tenantId, batch("goods_receipt", receiptUuid, payload));
+
+        assertThat(count("SELECT count(*) FROM stock_movements WHERE client_uuid = ?", movementUuid))
+                .isEqualTo(1);
+    }
+
+    private String receiptPayload(UUID receiptUuid, UUID movementUuid) {
+        return """
+               {
+                 "clientUuid": "%s",
+                 "branchCode": "KND",
+                 "supplierName": "Keells",
+                 "reference": "DN-1001",
+                 "receivedAt": "2026-08-22T04:15:00Z",
+                 "totalCostMinor": 720000,
+                 "movements": [
+                   {
+                     "clientUuid": "%s",
+                     "productClientUuid": "%s",
+                     "qtyDelta": 24,
+                     "reason": "RECEIVE"
+                   }
+                 ]
+               }
+               """
+                .formatted(receiptUuid, movementUuid, PRODUCT);
+    }
+
     private SyncBatch batch(String aggregate, UUID aggregateId, String payload) {
-        return new SyncBatch(
-                TENANT, "Kandy Stores", List.of(new SyncBatch.Item(aggregate, aggregateId, json(payload))));
+        return new SyncBatch(List.of(new SyncBatch.Item(aggregate, aggregateId, json(payload))));
     }
 
     private String status(UUID shiftUuid) {

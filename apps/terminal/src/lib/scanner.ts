@@ -49,8 +49,16 @@ export function isScannerTerminator(event: KeyboardEvent): boolean {
 }
 
 export type KeyBinding = {
-  /** Function keys only. See the note above on plain digits. */
+  /** Function keys, or a plain letter with {@link ctrl}. See the note above on plain digits. */
   key: string;
+  /**
+   * Require Ctrl, and match the key case-insensitively (M3-01).
+   *
+   * <p>Exists for the back office and should stay rare. The function bar is the cashier's whole
+   * vocabulary, and a shortcut that is not on it is one nobody discovers by looking — which is
+   * the point for actions that are not selling, and a bug for any action that is.
+   */
+  ctrl?: boolean;
   run: () => void;
   /** Skip when a modal has taken over the screen. */
   when?: () => boolean;
@@ -77,7 +85,15 @@ export function useGlobalKeys(bindings: readonly KeyBinding[]): void {
       }
 
       for (const binding of latest.current) {
-        if (binding.key !== event.key) continue;
+        if (binding.ctrl) {
+          // Ctrl is required, and Alt/Meta must be absent — Ctrl+Alt is AltGr on a European
+          // keyboard, and swallowing it would eat characters a cashier is trying to type.
+          if (!event.ctrlKey || event.altKey || event.metaKey) continue;
+          if (binding.key.toLowerCase() !== event.key.toLowerCase()) continue;
+        } else {
+          if (event.ctrlKey || event.altKey || event.metaKey) continue;
+          if (binding.key !== event.key) continue;
+        }
         if (binding.when && !binding.when()) continue;
         // Function keys are browser and OS shortcuts too — F3 opens find, F12 devtools.
         // On an appliance the till's meaning is the only one that should survive.

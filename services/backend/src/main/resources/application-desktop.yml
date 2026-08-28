@@ -23,6 +23,11 @@ lumora:
   sync:
     enabled: true
     cloud-url: ${LUMORA_CLOUD_URL:http://127.0.0.1:8082}
+    # The tenant API token this till presents to the cloud (M4-01). Empty until the shop is
+    # activated: M5-03's first-run wizard provisions it, and until then the outbox simply
+    # queues rather than pushing as nobody. Deliberately has no default — a shipped default
+    # would be the same credential on every till that ever installs this build.
+    token: ${LUMORA_CLOUD_TOKEN:}
     # ISO-8601 because @Scheduled reads these two directly and only parses that form.
     # Ten seconds, not milliseconds: nothing in the shop waits on this, and a busy loop
     # against an unreachable cloud helps nobody.
@@ -34,3 +39,8 @@ lumora:
     # Capped, so a till that recovers at 3am syncs by 3:05 rather than at the far end of
     # an unbounded exponential.
     backoff-max: 5m
+    # How often the downward pull actually reaches the cloud (M4-09). Much longer than the drain
+    # above, because the two differ in urgency: an unsent sale should leave within seconds, a
+    # licence that runs out at noon can be noticed at five past. The tick is still every ten
+    # seconds; this is the rate limit inside it.
+    entitlement-interval: 5m

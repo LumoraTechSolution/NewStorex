@@ -63,7 +63,9 @@ public class CashMovementService {
         }
 
         LocalShop.Branch branch = shop.branch(request.branchCode());
-        long shiftId = shifts.requireOpenShiftId(branch.tenantId(), branch.id(), request.terminalCode());
+        ShiftService.OpenShift shift =
+                shifts.requireOpenShift(branch.tenantId(), branch.id(), request.terminalCode());
+        long shiftId = shift.id();
 
         long signedMinor = signed(request.kind(), request.amountMinor());
         Instant occurredAt = request.occurredAt() != null ? request.occurredAt() : Instant.now();
@@ -89,7 +91,7 @@ public class CashMovementService {
                             signedMinor,
                             request.reasonCode(),
                             request.note(),
-                            LocalShop.SEEDED_OPERATOR_ID,
+                            shift.operatorId(),
                             Timestamp.from(occurredAt));
 
         // M2-12. Same transaction as the row it describes, like every other aggregate: a drop to
