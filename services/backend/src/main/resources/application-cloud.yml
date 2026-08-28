@@ -8,7 +8,12 @@ spring:
     username: ${CLOUD_DATABASE_USER:lumora}
     password: ${CLOUD_DB_PASSWORD:lumora}
     hikari:
-      maximum-pool-size: 20
+      # Twenty is right for a dedicated database and wrong for a free-tier one,
+      # where a large idle pool holds a serverless compute awake. The deployed
+      # value is 5 (see DEPLOYMENT.md). Overridable rather than lowered outright
+      # because the ceiling belongs to the environment, not the code — and the
+      # desktop profile sets its own 8 and never reads this.
+      maximum-pool-size: ${CLOUD_DB_POOL_SIZE:20}
       pool-name: lumora-cloud
 
   flyway:

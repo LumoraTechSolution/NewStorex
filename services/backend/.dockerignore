@@ -1,0 +1,28 @@
+# The build context is services/backend, so the rest of the monorepo is already
+# outside it. This file is about what to keep out of *this* directory's upload.
+
+# The big one. A local ./mvnw package leaves ~60 MB here; without this line it is
+# uploaded on every build and a stale jar can be copied into the image.
+target/
+
+# Development data. Never in a production image — it seeds a shop that does not
+# exist, into a database that has real ones.
+dev-seed.sql
+
+# Secrets, if anyone ever puts one here. Cloud values belong in the host's
+# environment, never in a file — see DEPLOYMENT.md.
+.env
+.env.*
+
+# Documentation is not part of the runtime.
+README.md
+DEPLOYMENT.md
+
+# JVM crash dumps from a local run.
+*.log
+hs_err_pid*
+replay_pid*
+
+# Note what is deliberately NOT ignored: .mvn/wrapper/maven-wrapper.jar. The
+# build stage needs it, and the root .gitignore already un-ignores it for the
+# same reason.

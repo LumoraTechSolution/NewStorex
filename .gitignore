@@ -46,3 +46,9 @@ Thumbs.db
 coverage/
 playwright-report/
 test-results/
+
+# Local credential scratch. `details.md` held a live till token, an owner login and
+# the platform super-admin password — a `git add -A` away from being published to a
+# branch and living in history forever. Ignored so that cannot happen by accident;
+# real secrets belong in a password manager, not the working tree.
+details.md

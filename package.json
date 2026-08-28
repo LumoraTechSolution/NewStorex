@@ -22,6 +22,7 @@
     "db:psql:cloud": "docker compose exec db-cloud psql -U lumora -d lumora_cloud",
     "db:offline": "docker compose stop db-cloud",
     "db:online": "docker compose start db-cloud",
+    "db:dump:cloud": "node scripts/dump-cloud.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
