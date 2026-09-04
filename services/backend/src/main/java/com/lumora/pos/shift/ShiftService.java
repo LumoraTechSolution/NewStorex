@@ -159,9 +159,12 @@ public class ShiftService {
         List<ShiftStatusResponse> open =
                 jdbc.query(
                         """
-                        SELECT id, client_uuid, opened_at, opening_float_minor
-                        FROM shifts
-                        WHERE tenant_id = ? AND branch_id = ? AND terminal_code = ? AND status = 'OPEN'
+                        SELECT s.id, s.client_uuid, s.opened_at, s.opening_float_minor,
+                               u.display_name AS operator_name
+                        FROM shifts s
+                        JOIN users u ON u.id = s.opened_by
+                        WHERE s.tenant_id = ? AND s.branch_id = ? AND s.terminal_code = ?
+                          AND s.status = 'OPEN'
                         """,
                         (rs, row) ->
                                 new ShiftStatusResponse(
@@ -171,7 +174,13 @@ public class ShiftService {
                                         rs.getTimestamp("opened_at").toInstant(),
                                         rs.getLong("opening_float_minor"),
                                         countSales(rs.getLong("id")),
-                                        countCashMovements(rs.getLong("id"))),
+                                        countCashMovements(rs.getLong("id")),
+                                        // An inner join, not a left one: `opened_by` is NOT NULL and
+                                        // references `users`, and there is no delete on that table —
+                                        // M3-08 deactivates instead, precisely so history keeps
+                                        // resolving. A missing row here would be a broken invariant,
+                                        // and hiding it behind a null name would hide that too.
+                                        rs.getString("operator_name")),
                         branch.tenantId(),
                         branch.id(),
                         terminalCode);
@@ -472,8 +481,15 @@ public class ShiftService {
                         SELECT s.client_uuid, b.code AS branch_code, s.terminal_code, s.status,
                                s.opened_at, s.opening_float_minor, s.closed_at,
                                s.counted_cash_minor, s.expected_cash_minor, s.variance_minor,
-                               s.variance_reason, s.variance_note
-                          FROM shifts s JOIN branches b ON b.id = s.branch_id
+                               s.variance_reason, s.variance_note,
+                               opener.client_uuid  AS opened_by_client_uuid,
+                               opener.display_name AS opened_by_name,
+                               closer.client_uuid  AS closed_by_client_uuid,
+                               closer.display_name AS closed_by_name
+                          FROM shifts s
+                          JOIN branches b ON b.id = s.branch_id
+                          JOIN users opener ON opener.id = s.opened_by
+                          LEFT JOIN users closer ON closer.id = s.closed_by
                          WHERE s.id = ?
                         """,
                         (rs, row) -> {
@@ -491,6 +507,25 @@ public class ShiftService {
                             p.put("varianceMinor", rs.getObject("variance_minor", Long.class));
                             p.put("varianceReason", rs.getString("variance_reason"));
                             p.put("varianceNote", rs.getString("variance_note"));
+                            // Who was on the till (M6-13). Absent from this payload until now, so
+                            // the cloud has never known it and every shift already up there never
+                            // will - which is why the columns it lands in are nullable.
+                            //
+                            // The uuid *and* the name, not one or the other. The uuid is the
+                            // identity that survives a rename and joins to the synced user; the
+                            // name is what the console shows when that user has not arrived yet,
+                            // because the shift and the user are separate aggregates with no
+                            // ordering between them. A console showing a blank where a cashier's
+                            // name belongs, until some later batch happened to drain, would look
+                            // broken rather than pending.
+                            p.put(
+                                    "openedByClientUuid",
+                                    rs.getObject("opened_by_client_uuid", UUID.class));
+                            p.put("openedByName", rs.getString("opened_by_name"));
+                            p.put(
+                                    "closedByClientUuid",
+                                    rs.getObject("closed_by_client_uuid", UUID.class));
+                            p.put("closedByName", rs.getString("closed_by_name"));
                             return p;
                         },
                         shiftId);

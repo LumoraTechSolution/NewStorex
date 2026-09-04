@@ -2,6 +2,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 
 import {
   _electron as electron,
+  expect,
   test as base,
   type ElectronApplication,
   type Page,
@@ -10,10 +11,16 @@ import {
 /**
  * One record of something a pointing device would have caused.
  *
- * `detail` is the discriminator that matters. A real mouse click carries a click count of
- * at least 1; the synthetic click the browser fires when a focused `<button>` is activated
- * by Enter or Space carries `0`. Both are `isTrusted`, so trust alone cannot tell them
- * apart — and the difference is exactly "did a hand leave the keyboard".
+ * `detail` is *the* discriminator, and since M6 it is load-bearing rather than merely
+ * informative. A real mouse click carries a click count of at least 1; the synthetic click
+ * the browser fires when a focused `<button>` is activated by Enter or Space carries `0`.
+ * Both are `isTrusted`, so trust alone cannot tell them apart — and the difference is
+ * exactly "did a hand leave the keyboard".
+ *
+ * Until M6 the sale screen had no touch controls, so `pointerEvents()` being empty was the
+ * whole invariant. Now that it has them, the invariant that survives is `handEvents()`
+ * below: not "the window saw nothing", but "the window saw nothing a finger or a mouse
+ * could have caused".
  */
 export interface PointerEvent {
   readonly type: string;
@@ -27,6 +34,19 @@ export interface Till {
   readonly app: ElectronApplication;
   /** Everything pointer-shaped the window has seen since it loaded. */
   pointerEvents(): Promise<PointerEvent[]>;
+  /**
+   * The subset of `pointerEvents()` that a hand actually produced.
+   *
+   * This is the assertion the keyboard specs make. Keyboard activation of a `<button>`
+   * produces exactly one event — a `click` with `detail: 0` and no `pointerdown` before it
+   * — so filtering those out leaves a list that is empty if and only if nobody touched the
+   * screen or the mouse.
+   *
+   * Both halves of the filter are needed. `detail > 0` alone would miss a `pointerdown`
+   * that never became a click (a tap that slid off its target, a drag), and those are
+   * hand-caused too; the type check alone would flag the keyboard's synthetic `click`.
+   */
+  handEvents(): Promise<PointerEvent[]>;
   /**
    * Every key the window has seen, with where it landed.
    *
@@ -180,16 +200,30 @@ export const test = base.extend<{ till: Till }>({
     await page.addInitScript(recorderSource);
     await page.reload();
     await page.waitForLoadState('domcontentloaded');
-    await page.locator('#scan').waitFor({ state: 'visible' });
+
+    // Waited on **focus**, not visibility, and that distinction cost a run to find. The
+    // scan field takes the caret in a `useEffect`, which runs after the element is painted
+    // — so a spec that starts typing as soon as `#scan` is visible can lose its first
+    // character or two to nothing at all. The symptom is a barcode arriving one digit short
+    // ("No product for barcode 791234567890"), which reads as a product problem rather than
+    // a timing one, and only on the first scan of a window.
+    await expect(page.locator('#scan')).toBeFocused({ timeout: 15_000 });
 
     let consumed = 0;
+    const pointerEvents = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __lumoraPointerEvents: PointerEvent[] }).__lumoraPointerEvents,
+      );
+
     await use({
       page,
       app,
-      pointerEvents: () =>
-        page.evaluate(
-          () =>
-            (window as unknown as { __lumoraPointerEvents: PointerEvent[] }).__lumoraPointerEvents,
+      pointerEvents,
+      handEvents: async () =>
+        (await pointerEvents()).filter(
+          (event) =>
+            event.detail > 0 || event.type.startsWith('pointer') || event.type.startsWith('mouse'),
         ),
       keyLog: () =>
         page.evaluate(() => (window as unknown as { __lumoraKeys: string[] }).__lumoraKeys),

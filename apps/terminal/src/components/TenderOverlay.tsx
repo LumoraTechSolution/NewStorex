@@ -32,6 +32,17 @@ const TENDER_KINDS: readonly { kind: TenderKind; label: string }[] = [
 /** Digits build the amount from the right, like a calculator — no decimal key needed. */
 const MAX_BUFFER_DIGITS = 9;
 
+/**
+ * The notes a Sri Lankan customer actually hands over, in **minor units** (M6).
+ *
+ * Minor, because that is what `buffer` holds: digits accumulate from the right and are read
+ * as `minor(Number(buffer))`, so the string for a 1,000-rupee note is "100000" and not
+ * "1000" — the latter would tender ten rupees. Both the label and the buffer are derived
+ * from this one number below, so the two cannot drift apart; a tile whose caption and value
+ * disagree is a 100x money bug that no type would catch.
+ */
+const DENOMINATIONS_MINOR = [50000, 100000, 200000, 500000] as const;
+
 export type TenderOutcome = {
   tenders: readonly TenderLine[];
   roundingAdjustmentMinor: number;
@@ -168,16 +179,26 @@ export function TenderOverlay({
           </ul>
         )}
 
+        {/* Buttons since M6, not spans: Tab still cycles them, and a finger can now pick
+            one directly. Same `setKind` either way. */}
         <div className="flex gap-2" role="group" aria-label="Tender kind">
           {TENDER_KINDS.map((t) => (
-            <span
+            <button
               key={t.kind}
+              type="button"
+              tabIndex={-1}
+              aria-pressed={t.kind === kind}
+              onClick={() => {
+                setError(null);
+                setBuffer('');
+                setKind(t.kind);
+              }}
               className={`min-h-touch flex flex-1 items-center justify-center rounded border px-2 text-sm ${
                 t.kind === kind ? 'border-accent text-accent' : 'border-hair text-ink-3'
               }`}
             >
               {t.label}
-            </span>
+            </button>
           ))}
         </div>
 
@@ -190,6 +211,56 @@ export function TenderOverlay({
           {buffer === '' && (
             <p className="text-ink-3 mt-1 text-xs">Suggested — press Enter to tender this amount</p>
           )}
+        </div>
+
+        {/*
+          The notes a customer hands over, so the common case is one tap instead of six.
+          Label and buffer both come from the same minor-unit constant — see
+          DENOMINATIONS_MINOR for why that matters.
+        */}
+        <div className="flex gap-2" role="group" aria-label="Quick cash">
+          {DENOMINATIONS_MINOR.map((amountMinor) => (
+            <button
+              key={amountMinor}
+              type="button"
+              tabIndex={-1}
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                setBuffer(String(amountMinor));
+              }}
+              className="border-hair text-ink lum-money min-h-touch flex-1 rounded border text-sm disabled:opacity-30"
+            >
+              {formatMinor(amountMinor)}
+            </button>
+          ))}
+        </div>
+
+        {/* The same keypad the sale screen's rail carries, in the same place on screen, so
+            the hand does not have to relearn it between ringing up and taking the money. */}
+        <div className="grid grid-cols-3 gap-1.5">
+          {['7', '8', '9', '4', '5', '6', '1', '2', '3', '0', '00'].map((digit) => (
+            <button
+              key={digit}
+              type="button"
+              tabIndex={-1}
+              disabled={busy}
+              onClick={() => addDigit(digit)}
+              className="border-hair text-ink lum-money min-h-[52px] rounded-lg border text-xl font-medium disabled:opacity-30"
+            >
+              {digit}
+            </button>
+          ))}
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="Undo"
+            disabled={busy}
+            onClick={backspace}
+            className="border-hair text-ink lum-money min-h-[52px] rounded-lg border text-xl font-medium disabled:opacity-30"
+          >
+            &#9003;
+          </button>
         </div>
 
         {error && (
@@ -218,6 +289,29 @@ export function TenderOverlay({
               </span>
             </>
           )}
+        </div>
+
+        {/* The two commits, as buttons. Same callbacks Enter and F12 run — the overlay has
+            one code path per action and touch is a second door onto it. */}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            tabIndex={-1}
+            disabled={busy || enteredMinor <= 0}
+            onClick={commitLine}
+            className="border-hair text-ink min-h-touch flex-1 rounded-lg border text-sm font-semibold disabled:opacity-30"
+          >
+            Tender this
+          </button>
+          <button
+            type="button"
+            tabIndex={-1}
+            disabled={busy || !summary.settled}
+            onClick={complete}
+            className="bg-ok text-ok-ink min-h-touch flex-1 rounded-lg text-base font-bold disabled:opacity-30"
+          >
+            {busy ? 'Working…' : 'Complete'}
+          </button>
         </div>
 
         <footer className="border-hair text-ink-3 flex flex-wrap justify-between gap-x-3 gap-y-1 border-t pt-3 text-xs">

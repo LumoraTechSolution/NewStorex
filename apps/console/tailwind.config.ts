@@ -32,6 +32,8 @@ const config: Config = {
       fontFamily: {
         sans: 'var(--lum-font-sans)',
         mono: 'var(--lum-font-mono)',
+        // Money, and nothing else. See globals.css.
+        display: 'var(--lum-font-display)',
       },
     },
   },

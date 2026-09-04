@@ -17,6 +17,12 @@ export type FunctionKey = {
  * the milestone that fills them.
  *
  * Labels are short enough not to wrap at 1024px, the narrowest screen the till supports.
+ *
+ * **Sized for a finger as well as a key (M6).** At 56px this was a legend that happened to
+ * be clickable; at 84px it is a control a cashier can hit without looking, which is what a
+ * touchscreen till needs from the row that carries void, tender and cash up. The two-span
+ * structure is deliberately untouched — the accessible name of each button is `key` plus
+ * `label` ("F6 Customer"), and the e2e suite selects on exactly that string.
  */
 export function FunctionBar({ keys }: { keys: readonly FunctionKey[] }) {
   return (
@@ -33,12 +39,16 @@ export function FunctionBar({ keys }: { keys: readonly FunctionKey[] }) {
             tabIndex={-1}
             disabled={!active}
             onClick={fk.run}
-            className={`min-h-touch flex flex-1 flex-col items-center justify-center gap-0.5 px-1 py-2 ${
+            className={`flex min-h-[84px] flex-1 flex-col items-center justify-center gap-1 px-1 py-2 ${
               active ? 'text-ink' : 'text-ink-3'
             }`}
           >
-            <span className={`text-xs font-semibold ${active ? 'text-accent' : ''}`}>{fk.key}</span>
-            <span className="truncate text-xs">{fk.label}</span>
+            <span
+              className={`lum-money text-lg font-bold leading-none ${active ? 'text-accent' : ''}`}
+            >
+              {fk.key}
+            </span>
+            <span className="truncate text-sm">{fk.label}</span>
           </button>
         );
       })}

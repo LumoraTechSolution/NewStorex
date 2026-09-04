@@ -36,7 +36,19 @@ public record AuthenticatedPrincipal(
     public enum Kind {
         /** V205's machine token, baked into a terminal at activation. Writes; never reads. */
         TILL,
-        /** V208's console session, belonging to a shop's owner. Reads; never writes. */
+        /**
+         * V208's console session, belonging to a shop's owner.
+         *
+         * <p>Reads, and writes <b>exactly one thing</b>: an acknowledgement that somebody looked at
+         * a cash variance (M6-10, {@code V214}). That widening was deliberate and is deliberately
+         * narrow — it touches no money and no ledger, it cannot change what a shift says, it is
+         * attributed to the session that did it, and the shift stays listed afterwards under
+         * {@code ?reviewed=true}. A stolen session can hide an alert; it still cannot alter a figure
+         * or hide a shift.
+         *
+         * <p>The alternative was making an owner walk to the till to clear a variance they are
+         * looking at on their phone, which is the whole reason the console exists.
+         */
         CONSOLE,
         /**
          * V209's platform session, belonging to Lumora staff. Spans tenants, and is the only kind

@@ -93,7 +93,7 @@ class ProductImportTest {
         admin.create(
                 shop.tenantId(),
                 new ProductDraft(
-                        UUID.randomUUID(), sku, "Salt 1kg", 12_000, "INCLUSIVE", 1800, null, List.of()));
+                        UUID.randomUUID(), sku, "Salt 1kg", 12_000, "INCLUSIVE", 1800, null, List.of(), null));
 
         ImportPlan plan = imports.plan(shop.tenantId(), List.of(row(2, sku, "Salt 1kg", 13_500)));
 
@@ -192,7 +192,8 @@ class ProductImportTest {
                         "INCLUSIVE",
                         1800,
                         null,
-                        List.of(taken)));
+                        List.of(taken),
+                        null));
 
         int before = admin.list(shop.tenantId()).size();
         String goodSku = unique("SKU");
@@ -293,7 +294,15 @@ class ProductImportTest {
         admin.create(
                 shop.tenantId(),
                 new ProductDraft(
-                        UUID.randomUUID(), sku, "Added By Hand", 55_000, "INCLUSIVE", 1800, null, List.of()));
+                        UUID.randomUUID(),
+                        sku,
+                        "Added By Hand",
+                        55_000,
+                        "INCLUSIVE",
+                        1800,
+                        null,
+                        List.of(),
+                        null));
 
         assertThatThrownBy(() -> imports.apply(shop.tenantId(), file, hash))
                 .isInstanceOf(RejectedException.class)
@@ -438,6 +447,58 @@ class ProductImportTest {
     }
 
     /**
+     * An import carries no reorder point and must not clear one.
+     *
+     * <p>{@code save()} writes the whole row, so the import has to re-read what was there and pass
+     * it back — otherwise loading a supplier's price list would silently unwatch every product a
+     * shopkeeper had set a threshold on, and the low-stock screen would go quiet for the exact
+     * reason nobody would think to check. The same "an import is not a sync" rule as the test
+     * below: it changes what is in the file, and nothing else.
+     */
+    @Test
+    void anImportDoesNotClearAReorderPointSetByHand() {
+        Shop shop = fixtures.seed();
+        String sku = unique("SKU");
+        ProductRow created =
+                admin.create(
+                        shop.tenantId(),
+                        new ProductDraft(
+                                UUID.randomUUID(),
+                                sku,
+                                "Watched Line",
+                                10_000,
+                                "INCLUSIVE",
+                                1800,
+                                null,
+                                List.of(),
+                                12));
+        assertThat(created.reorderPoint()).isEqualTo(12);
+
+        // The same product, at a new price — an ordinary price-list update.
+        importFile(shop, List.of(row(2, sku, "Watched Line", 13_500)));
+
+        ProductRow after = admin.byId(shop.tenantId(), created.id());
+        assertThat(after.priceMinor()).as("the file's price did apply").isEqualTo(13_500);
+        assertThat(after.reorderPoint())
+                .as("the threshold was not in the file and must survive it")
+                .isEqualTo(12);
+    }
+
+    /** A product an import creates is unwatched — nobody has decided a threshold for it yet. */
+    @Test
+    void anImportedProductArrivesUnwatched() {
+        Shop shop = fixtures.seed();
+        String sku = unique("SKU");
+
+        importFile(shop, List.of(row(2, sku, "Brand New", 9_000)));
+
+        assertThat(admin.list(shop.tenantId()))
+                .filteredOn(product -> product.sku().equals(sku))
+                .singleElement()
+                .satisfies(product -> assertThat(product.reorderPoint()).isNull());
+    }
+
+    /**
      * An import never discontinues anything.
      *
      * <p>It is not a sync. A supplier's price list covers that supplier's goods, and treating an
@@ -458,7 +519,8 @@ class ProductImportTest {
                                 "INCLUSIVE",
                                 1800,
                                 null,
-                                List.of()));
+                                List.of(),
+                                null));
 
         importFile(shop, List.of(row(2, unique("SKU"), "Something Else", 20_000)));
 

@@ -1,6 +1,12 @@
 server:
   address: 0.0.0.0
   port: 8082
+  tomcat:
+    # A rejected upload must still come back as its 422 (M5-06). Tomcat swallows only 2 MB of an
+    # unread request body by default and then resets the connection, which a till reads as a
+    # network failure - so a backup with a permanently bad header would be retried forever rather
+    # than once. Draining the body costs a few seconds of one connection and buys a real answer.
+    max-swallow-size: -1
 
 spring:
   datasource:
@@ -42,3 +48,26 @@ lumora:
     # it in an environment file is not a standing back door. See PlatformBootstrap.
     bootstrap-email: ${LUMORA_PLATFORM_BOOTSTRAP_EMAIL:}
     bootstrap-name: ${LUMORA_PLATFORM_BOOTSTRAP_NAME:Lumora}
+
+  backup:
+    # Off-site copies of a shop's whole database (M5-06). Cloudflare R2 in production: 10 GB free,
+    # no egress charge, and the S3 API so the deployment is not soldered to one vendor.
+    #
+    # Leaving these unset is legal and logs a warning at startup rather than failing, because the
+    # test suite and a developer's laptop both want the filesystem store. On the deployed host that
+    # warning is the difference between a backup and the appearance of one — the container's disk
+    # is recreated on every release.
+    s3:
+      bucket: ${LUMORA_BACKUP_S3_BUCKET:}
+      endpoint: ${LUMORA_BACKUP_S3_ENDPOINT:}
+      # R2 has no regions in the AWS sense and still requires the signature to name one.
+      region: ${LUMORA_BACKUP_S3_REGION:auto}
+      access-key-id: ${LUMORA_BACKUP_S3_ACCESS_KEY_ID:}
+      secret-access-key: ${LUMORA_BACKUP_S3_SECRET_ACCESS_KEY:}
+    directory: ${LUMORA_CLOUD_BACKUP_DIR:./cloud-backups}
+    # 512 MB. A shop's compressed dump is single-digit megabytes in its first year; this is the
+    # ceiling on what one request may spend of somebody else's storage, not an expectation.
+    max-bytes: ${LUMORA_BACKUP_MAX_BYTES:536870912}
+    # A week of twice-daily uploads. Deep enough to survive a corruption nobody noticed for days,
+    # shallow enough that a hundred shops is a bill somebody can look at.
+    keep-per-tenant: ${LUMORA_BACKUP_KEEP:14}

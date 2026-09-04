@@ -150,7 +150,7 @@ class ConsoleReportTest {
         closedShift(mine, "KND", "T1", 25_000L);
         closedShift(mine, "KND", "T1", 500L);
 
-        List<ConsoleReportService.CashVariance> flagged = reports.cashVariances(mine, 14, 10_000L);
+        List<ConsoleReportService.CashVariance> flagged = reports.cashVariances(mine, 14, 10_000L, false);
 
         assertThat(flagged).hasSize(1);
         assertThat(flagged.get(0).varianceMinor()).isEqualTo(25_000L);
@@ -162,21 +162,21 @@ class ConsoleReportTest {
         closedShift(mine, "KND", "T1", 25_000L);
         closedShift(mine, "KND", "T2", -25_000L);
 
-        assertThat(reports.cashVariances(mine, 14, 10_000L)).hasSize(2);
+        assertThat(reports.cashVariances(mine, 14, 10_000L, false)).hasSize(2);
     }
 
     @Test
     void anOpenShiftIsNotAVariance() {
         openShift(mine, "KND", "T1");
 
-        assertThat(reports.cashVariances(mine, 14, 0L)).isEmpty();
+        assertThat(reports.cashVariances(mine, 14, 0L, false)).isEmpty();
     }
 
     @Test
     void attentionNeverIncludesAnotherShopsShifts() {
         closedShift(theirs, "GAL", "T1", 99_000L);
 
-        assertThat(reports.cashVariances(mine, 14, 10_000L)).isEmpty();
+        assertThat(reports.cashVariances(mine, 14, 10_000L, false)).isEmpty();
     }
 
     // ------------------------------------------------------------------------ recent sales

@@ -40,7 +40,15 @@ class ProductAdminTest {
 
     private static ProductDraft draft(String sku, String name, long priceMinor, String... barcodes) {
         return new ProductDraft(
-                UUID.randomUUID(), sku, name, priceMinor, "INCLUSIVE", 1800, null, List.of(barcodes));
+                UUID.randomUUID(),
+                sku,
+                name,
+                priceMinor,
+                "INCLUSIVE",
+                1800,
+                null,
+                List.of(barcodes),
+                null);
     }
 
     /** A unique suffix, so these tests can run in any order against one shared tenant. */
@@ -88,7 +96,15 @@ class ProductAdminTest {
                 shop.tenantId(),
                 product.id(),
                 new ProductDraft(
-                        null, product.sku(), "Salt 1kg", 13_500, "INCLUSIVE", 1800, null, List.of(barcode)));
+                        null,
+                        product.sku(),
+                        "Salt 1kg",
+                        13_500,
+                        "INCLUSIVE",
+                        1800,
+                        null,
+                        List.of(barcode),
+                        null));
 
         assertThat(lookup.byBarcode(barcode)).hasValueSatisfying(s -> assertThat(s.priceMinor()).isEqualTo(13_500));
     }
@@ -146,7 +162,8 @@ class ProductAdminTest {
                                 "INCLUSIVE",
                                 1800,
                                 null,
-                                List.of(second, third)));
+                                List.of(second, third),
+                                null));
 
         assertThat(saved.barcodes()).containsExactly(second, third);
         assertThat(lookup.byBarcode(first)).isEmpty();
@@ -185,7 +202,8 @@ class ProductAdminTest {
                         "INCLUSIVE",
                         1800,
                         null,
-                        List.of(barcode)));
+                        List.of(barcode),
+                        null));
 
         assertThat(barcodeUuid(barcode)).isEqualTo(before);
     }
@@ -243,7 +261,8 @@ class ProductAdminTest {
                                                 "INCLUSIVE",
                                                 18_000,
                                                 null,
-                                                List.of())))
+                                                List.of(),
+                                                null)))
                 .isInstanceOf(RejectedException.class)
                 .hasMessageContaining("typo");
     }
@@ -307,7 +326,8 @@ class ProductAdminTest {
                                 "INCLUSIVE",
                                 1800,
                                 beverages.id(),
-                                List.of()));
+                                List.of(),
+                                null));
         assertThat(tea.categoryName()).isEqualTo(beverages.name());
 
         String renamed = unique("Drinks");
@@ -361,7 +381,8 @@ class ProductAdminTest {
                         "INCLUSIVE",
                         1800,
                         category.id(),
-                        List.of()));
+                        List.of(),
+                        null));
 
         assertThat(admin.categories(shop.tenantId()))
                 .filteredOn(row -> row.id() == category.id())

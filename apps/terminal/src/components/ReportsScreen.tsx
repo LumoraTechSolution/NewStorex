@@ -1,7 +1,7 @@
 'use client';
 
 import { formatMinor } from '@lumora/domain';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { FIELD_CLASS, Labelled } from '@/components/Labelled';
 import type { BackOffice } from '@/lib/useBackOffice';
@@ -12,10 +12,16 @@ import type { BackOffice } from '@/lib/useBackOffice';
  * <h2>Three questions, three tabs, one screen</h2>
  *
  * A shopkeeper reading their own till asks a small number of things. Day sales answers "is the
- * drawer right"; top products answers "what do I reorder"; shifts answers "what happened while I
- * was out". They are tabs rather than three nav entries because they are read one after another in
- * the same sitting, and because a fourth report will be a fourth tab rather than a fourth thing to
- * find.
+ * drawer right"; top products answers "what sells"; low stock answers "what do I reorder"; shifts
+ * answers "what happened while I was out". They are tabs rather than separate nav entries because
+ * they are read one after another in the same sitting, and because another report is another tab
+ * rather than another thing to find.
+ *
+ * <h2>Low stock is the only one about tomorrow</h2>
+ *
+ * Every other tab here reports the past. Low stock is the one a shopkeeper can still act on, which
+ * is why it sits beside top products rather than under Stock: "what sells" and "what am I about to
+ * run out of" are the same decision read in one sitting.
  *
  * <h2>Stock on hand is not repeated here</h2>
  *
@@ -66,6 +72,17 @@ interface TopProduct {
   revenueNetMinor: number;
 }
 
+interface LowStockRow {
+  productClientUuid: string;
+  sku: string;
+  productName: string;
+  categoryName: string | null;
+  qtyOnHand: number;
+  reorderPoint: number;
+  soldLast30Days: number;
+  lastMovedAt: string | null;
+}
+
 interface ClosedShift {
   id: number;
   branchCode: string;
@@ -86,11 +103,12 @@ interface ClosedShift {
   refundsTotalMinor: number;
 }
 
-type Tab = 'DAY' | 'TOP' | 'SHIFTS' | 'STOCK';
+type Tab = 'DAY' | 'TOP' | 'LOW' | 'SHIFTS' | 'STOCK';
 
 const TABS: readonly { id: Tab; label: string }[] = [
   { id: 'DAY', label: 'Day sales' },
   { id: 'TOP', label: 'Top products' },
+  { id: 'LOW', label: 'Low stock' },
   { id: 'SHIFTS', label: 'Shifts' },
   { id: 'STOCK', label: 'Stock on hand' },
 ];
@@ -113,9 +131,11 @@ const VARIANCE_REASON_LABEL: Record<string, string> = {
 
 export function ReportsScreen({
   office,
+  branchCode,
   onOpenStock,
 }: {
   office: BackOffice;
+  branchCode: string;
   onOpenStock: () => void;
 }) {
   const [tab, setTab] = useState<Tab>('DAY');
@@ -148,6 +168,7 @@ export function ReportsScreen({
 
       {tab === 'DAY' && <DayPanel office={office} />}
       {tab === 'TOP' && <TopProductsPanel office={office} />}
+      {tab === 'LOW' && <LowStockPanel office={office} branchCode={branchCode} />}
       {tab === 'SHIFTS' && <ShiftsPanel office={office} />}
       {tab === 'STOCK' && <StockPointer onOpenStock={onOpenStock} />}
     </div>
@@ -416,28 +437,212 @@ function TopProductsPanel({ office }: { office: BackOffice }) {
   );
 }
 
-// ------------------------------------------------------------------------------- shifts
+// ---------------------------------------------------------------------------- low stock
 
-function ShiftsPanel({ office }: { office: BackOffice }) {
-  const [rows, setRows] = useState<ClosedShift[] | null>(null);
+/**
+ * What the shop is about to run out of (M3-15).
+ *
+ * <h2>Why an empty list is the good outcome, and has to look like one</h2>
+ *
+ * Every other tab shows something whatever happens. This one is usually empty, and an empty screen
+ * that says nothing reads like a screen that is broken. So the empty state says which products are
+ * being watched and how many — "nothing is low" and "nothing is watched" are completely different
+ * facts and the second one needs fixing, not celebrating.
+ *
+ * <h2>Sold in 30 days is the column that makes it an order</h2>
+ *
+ * Two products both three short are not the same problem if one sells forty a month and the other
+ * four. Shortfall decides the order of the rows; how fast it sells is what tells the shopkeeper
+ * whether to act today.
+ */
+function LowStockPanel({ office, branchCode }: { office: BackOffice; branchCode: string }) {
+  const [rows, setRows] = useState<LowStockRow[] | null>(null);
+  const [watched, setWatched] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
     void office
-      .request<ClosedShift[]>('/api/reports/shifts?limit=30')
+      .request<LowStockRow[]>(
+        `/api/back-office/stock-on-hand/low?branchCode=${encodeURIComponent(branchCode)}`,
+      )
       .then((body) => {
         if (!current) return;
         setRows(body);
         setError(null);
       })
       .catch((e: unknown) => {
-        if (current) setError(e instanceof Error ? e.message : String(e));
+        if (!current) return;
+        setError(e instanceof Error ? e.message : 'Could not load low stock.');
+      });
+    return () => {
+      current = false;
+    };
+  }, [branchCode, office]);
+
+  // Only to tell "nothing is low" apart from "nothing is watched" in the empty state. The list
+  // itself is never derived here — that comparison belongs to the one query that owns it.
+  useEffect(() => {
+    let current = true;
+    void office
+      .request<{ reorderPoint: number | null }[]>('/api/back-office/products')
+      .then((body) => {
+        if (!current) return;
+        setWatched(body.filter((row) => row.reorderPoint !== null).length);
+      })
+      .catch(() => {
+        if (current) setWatched(null);
       });
     return () => {
       current = false;
     };
   }, [office]);
+
+  return (
+    <section className="flex flex-col gap-3">
+      <p className="text-ink-3 text-sm">
+        Products at or below the reorder point set for them. A product with no reorder point is
+        never listed here, however low it goes — set one on the product to start watching it.
+      </p>
+
+      {error && <Problem message={error} />}
+
+      {rows && rows.length === 0 && (
+        <p className="text-ink-3 text-sm">
+          {watched === 0
+            ? 'No product has a reorder point yet, so nothing can be low. Set one on a product to start watching it.'
+            : `Nothing is low. ${watched === null ? 'Every watched product' : `All ${watched} watched products`} are above their reorder point.`}
+        </p>
+      )}
+
+      {rows && rows.length > 0 && (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-ink-3 text-left text-xs uppercase tracking-wider">
+              <th scope="col" className="py-1">
+                Product
+              </th>
+              <th scope="col" className="py-1 text-right">
+                On hand
+              </th>
+              <th scope="col" className="py-1 text-right">
+                Reorder at
+              </th>
+              <th scope="col" className="py-1 text-right">
+                Short by
+              </th>
+              <th scope="col" className="py-1 text-right">
+                Sold in 30 days
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.productClientUuid} className="border-hair border-t">
+                <td className="text-ink py-1">
+                  {row.productName}
+                  <span className="text-ink-3 lum-money ml-2 text-xs">{row.sku}</span>
+                </td>
+                <td
+                  className={`lum-money py-1 text-right font-semibold ${
+                    row.qtyOnHand <= 0 ? 'text-danger' : 'text-ink'
+                  }`}
+                >
+                  {row.qtyOnHand}
+                </td>
+                <td className="lum-money text-ink-3 py-1 text-right">{row.reorderPoint}</td>
+                <td className="lum-money text-ink-2 py-1 text-right">
+                  {row.reorderPoint - row.qtyOnHand}
+                </td>
+                <td className="lum-money text-ink-2 py-1 text-right">{row.soldLast30Days}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+// ------------------------------------------------------------------------------- shifts
+
+/** How many rows a request asks for, and therefore how many "Load more" adds. */
+const SHIFT_PAGE = 30;
+
+/**
+ * The shift history, with a way to reach the thirty-first (M6-11).
+ *
+ * <h2>A date range and a button, not page numbers</h2>
+ *
+ * A shopkeeper does not think in pages. They think "show me last week" and "show me more", and
+ * those are two different controls: the range narrows the question, the button extends the answer.
+ * Page numbers would be a third concept that answers neither — and on a list that only ever grows
+ * at one end, page three means something different tomorrow.
+ *
+ * <h2>The cursor is the last row on screen</h2>
+ *
+ * "Load more" sends the closing time and id of the last row it is showing, not an offset. A shift
+ * closing on the other till while somebody reads this would push every row down one, and an offset
+ * would then repeat the row at the boundary — a shift listed twice in a list being reconciled
+ * against a drawer. Asking for "what comes after this exact row" cannot.
+ */
+function ShiftsPanel({ office }: { office: BackOffice }) {
+  const [rows, setRows] = useState<ClosedShift[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  /** False once a request comes back short, which is the only honest signal that there is no more. */
+  const [more, setMore] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const query = useCallback(
+    (after?: ClosedShift) => {
+      const params = new URLSearchParams({ limit: String(SHIFT_PAGE) });
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      if (after) {
+        params.set('beforeClosedAt', after.closedAt);
+        params.set('beforeId', String(after.id));
+      }
+      return office.request<ClosedShift[]>(`/api/reports/shifts?${params.toString()}`);
+    },
+    [from, office, to],
+  );
+
+  const load = useCallback(async () => {
+    setBusy(true);
+    try {
+      const body = await query();
+      setRows(body);
+      setMore(body.length === SHIFT_PAGE);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [query]);
+
+  const loadMore = useCallback(async () => {
+    if (!rows || rows.length === 0) return;
+    setBusy(true);
+    try {
+      const body = await query(rows[rows.length - 1]);
+      setRows([...rows, ...body]);
+      setMore(body.length === SHIFT_PAGE);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [query, rows]);
+
+  // The first load, and every change of range. Deliberately not debounced on typing: these are date
+  // inputs, so a change is a completed date rather than a keystroke.
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   return (
     <section className="flex flex-col gap-3">
@@ -448,10 +653,47 @@ function ShiftsPanel({ office }: { office: BackOffice }) {
         about to count the drawer must not see it.
       </p>
 
+      <div className="flex flex-wrap items-end gap-3">
+        <Labelled label="From">
+          <input
+            type="date"
+            value={from}
+            max={to || undefined}
+            onChange={(event) => setFrom(event.target.value)}
+            className={FIELD_CLASS}
+          />
+        </Labelled>
+        <Labelled label="To">
+          <input
+            type="date"
+            value={to}
+            min={from || undefined}
+            onChange={(event) => setTo(event.target.value)}
+            className={FIELD_CLASS}
+          />
+        </Labelled>
+        {(from || to) && (
+          <button
+            type="button"
+            onClick={() => {
+              setFrom('');
+              setTo('');
+            }}
+            className="border-hair text-ink-2 min-h-touch rounded border px-3"
+          >
+            Clear dates
+          </button>
+        )}
+      </div>
+
       {error && <Problem message={error} />}
 
       {rows && rows.length === 0 && (
-        <p className="text-ink-3 text-sm">No shift has been closed on this till yet.</p>
+        <p className="text-ink-3 text-sm">
+          {from || to
+            ? 'No shift was closed in those dates.'
+            : 'No shift has been closed on this till yet.'}
+        </p>
       )}
 
       {rows && rows.length > 0 && (
@@ -493,6 +735,17 @@ function ShiftsPanel({ office }: { office: BackOffice }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {rows && more && (
+        <button
+          type="button"
+          onClick={() => void loadMore()}
+          disabled={busy}
+          className="border-hair text-ink-2 min-h-touch self-start rounded border px-4 disabled:opacity-40"
+        >
+          {busy ? 'Loading…' : 'Load more'}
+        </button>
       )}
     </section>
   );

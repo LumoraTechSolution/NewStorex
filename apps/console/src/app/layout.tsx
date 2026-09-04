@@ -1,8 +1,33 @@
 import type { Metadata, Viewport } from 'next';
+import { Archivo, Fraunces, IBM_Plex_Mono } from 'next/font/google';
 
 import { beforeFirstPaintScript, PAGE_COLOUR } from '@/lib/theme';
 
 import './globals.css';
+
+/*
+ * Three faces, self-hosted (M6-14).
+ *
+ * `next/font/google` downloads these at build time and serves them from this origin. That is not a
+ * performance nicety here — `next.config.mjs` sets `font-src 'self'`, so a stylesheet link to
+ * Google would be blocked by our own CSP, and loosening the CSP to admit a third party onto the
+ * one page in this product that holds a bearer token is not a trade worth making for a typeface.
+ * The consequence is that a build needs the network the first time; the fonts are then in
+ * `.next/cache`.
+ *
+ * Archivo for the interface, Fraunces for money, IBM Plex Mono for the things that are codes rather
+ * than words — invoice numbers and SKUs, which are read character by character.
+ */
+const sans = Archivo({ subsets: ['latin'], display: 'swap', variable: '--font-sans' });
+
+const display = Fraunces({ subsets: ['latin'], display: 'swap', variable: '--font-display' });
+
+const mono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500'],
+  display: 'swap',
+  variable: '--font-mono',
+});
 
 export const metadata: Metadata = {
   title: 'StoreX Console',
@@ -46,7 +71,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   // on every single load. suppressHydrationWarning because this script mutates the element React
   // is about to reconcile, which is the whole point of it running first.
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      className={`${sans.variable} ${display.variable} ${mono.variable}`}
+      suppressHydrationWarning
+    >
       <body>
         <script dangerouslySetInnerHTML={{ __html: beforeFirstPaintScript() }} />
         {children}

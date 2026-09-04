@@ -82,6 +82,28 @@ async function signAs(till: Till, code: string, pin: string) {
   await till.page.keyboard.press('Enter');
 }
 
+/**
+ * Clicks a back-office section in the left nav.
+ *
+ * <p>Scoped to the nav because the section names are not unique on the page: "Products" is also
+ * the Reports screen's "Top products" tab, so a bare name match is ambiguous once a report is open.
+ */
+async function goTo(till: Till, section: string) {
+  await till.page
+    .getByRole('navigation', { name: 'Back office' })
+    .getByRole('button', { name: section, exact: true })
+    .click();
+}
+
+/** Opens one product's form from the list, by the name on its row. */
+async function editProduct(till: Till, name: string) {
+  await till.page
+    .getByRole('listitem')
+    .filter({ hasText: name })
+    .getByRole('button', { name: 'Edit' })
+    .click();
+}
+
 async function openBackOffice(till: Till) {
   await till.page.keyboard.press('Control+b');
   await expect(till.page.getByRole('heading', { name: 'Back office' })).toBeVisible({
@@ -99,7 +121,7 @@ test.describe('back office — M3-01', () => {
     // The till, exactly as it was. Not a reload of it — the scan field is what a cashier
     // looks for to know they can carry on.
     await expect(till.page.getByRole('textbox')).toBeVisible({ timeout: 10_000 });
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 
   test('an owner signs in with a code and a PIN, and never touches the mouse', async ({ till }) => {
@@ -112,7 +134,7 @@ test.describe('back office — M3-01', () => {
     await expect(till.page.getByText('Kumari Perera · owner')).toBeVisible({ timeout: 10_000 });
     await expect(till.page.getByRole('heading', { name: 'Users' })).toBeVisible();
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 
   test('a cashier cannot open the back office at all', async ({ till }) => {
@@ -315,6 +337,80 @@ test.describe('local reports — M3-10', () => {
    * <p>Asserted because a second stock table under Reports is the natural thing for the next
    * person to add, and the day the two disagree the owner has no way to tell which is right.
    */
+  /**
+   * Low stock (M3-15), end to end: set a threshold on the product form, then see it reported.
+   *
+   * <h2>Why both halves are in one spec</h2>
+   *
+   * The backend suite proves the comparison and the null-vs-zero rule against real Postgres. What
+   * only this can prove is that the two halves meet: that the number typed into a form on one
+   * screen is the number the report on another screen compares against. A field that posted but
+   * never reached the query — or a report reading a stale copy — passes every unit test there is.
+   *
+   * <p>The threshold is set through the form rather than with SQL for exactly that reason: an
+   * UPDATE here would skip the half most likely to be wrong.
+   */
+  test('a product watched from the product form appears on the low stock report', async ({
+    till,
+  }) => {
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+
+    // Set above whatever is on the shelf now, so the product is low by construction without
+    // moving any stock. Clamped at zero because the e2e suite's own sales leave this shelf
+    // negative, and a negative threshold is refused by the form — correctly, and it is asserted
+    // in the backend suite. Zero still makes an empty-or-negative shelf low.
+    const onHand = Number(
+      scalar(
+        `SELECT COALESCE(sum(m.qty_delta), 0)
+           FROM stock_movements m
+           JOIN products p ON p.id = m.product_id
+          WHERE p.sku = 'TEA-400'`,
+      ) ?? '0',
+    );
+    const threshold = Math.max(onHand + 5, 0);
+
+    await goTo(till, 'Products');
+    await editProduct(till, 'Ceylon Tea 400g');
+
+    const reorder = till.page.getByLabel('Reorder at');
+    await reorder.fill(String(threshold));
+    await till.page.getByRole('button', { name: 'Save' }).click();
+
+    // The form's number reached the row — asserted in the database, because the screen showing it
+    // back proves only that React kept it.
+    await expect
+      .poll(() => scalar("SELECT reorder_point FROM products WHERE sku = 'TEA-400'"), {
+        timeout: 10_000,
+      })
+      .toBe(String(threshold));
+
+    await goTo(till, 'Reports');
+    await till.page.getByRole('button', { name: 'Low stock', exact: true }).click();
+
+    await expect(till.page.getByRole('row').filter({ hasText: 'Ceylon Tea 400g' })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // Unwatching it takes it off the report again — the property the whole screen rests on, and
+    // the one a shopkeeper uses to stop being told about a line they no longer care about.
+    await goTo(till, 'Products');
+    await editProduct(till, 'Ceylon Tea 400g');
+    await till.page.getByLabel('Reorder at').fill('');
+    await till.page.getByRole('button', { name: 'Save' }).click();
+    await expect
+      .poll(() => scalar("SELECT reorder_point FROM products WHERE sku = 'TEA-400'"), {
+        timeout: 10_000,
+      })
+      .toBeNull();
+
+    await goTo(till, 'Reports');
+    await till.page.getByRole('button', { name: 'Low stock', exact: true }).click();
+    await expect(till.page.getByRole('row').filter({ hasText: 'Ceylon Tea 400g' })).toHaveCount(0);
+
+    await till.page.getByRole('button', { name: 'Back to the till' }).click();
+  });
+
   test('the stock-on-hand tab opens the one stock screen rather than a second copy', async ({
     till,
   }) => {

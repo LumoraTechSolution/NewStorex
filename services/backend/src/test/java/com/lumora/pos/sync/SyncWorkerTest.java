@@ -59,7 +59,8 @@ class SyncWorkerTest {
                         1,
                         3,
                         List.of("back_office"),
-                        java.time.Instant.now());
+                        java.time.Instant.now(),
+                        "Kandy Stores");
 
         @Override
         public Entitlement fetchEntitlement() {

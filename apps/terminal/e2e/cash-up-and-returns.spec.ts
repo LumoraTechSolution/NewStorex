@@ -134,7 +134,7 @@ test.describe('cash up', () => {
     // The cashier typed a positive 250.00; the drawer lost it. Nobody typed a minus sign.
     expect(recorded[0]![1]).toBe('-25000');
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 });
 
@@ -193,7 +193,7 @@ test.describe('returns — Gate M2', () => {
     expect(till.printedText()).toContain('CREDIT NOTE');
     expect(till.printedText()).toContain(invoiceNumber);
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 
   test('an unknown receipt number gets no further', async ({ till }) => {
@@ -237,7 +237,7 @@ test.describe('returns — Gate M2', () => {
       ),
     ).toBe('0');
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
 
     await till.page.keyboard.press('Escape');
     await till.page.keyboard.press('Escape');

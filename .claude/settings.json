@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "skillOverrides": {
+    "video-shotcraft": "off",
+    "prompt-master": "user-invocable-only",
+    "web-artifacts-builder": "off",
+    "i-have-adhd": "user-invocable-only",
+    "claude-mem:wowerpoint": "off",
+    "claude-mem:design-is": "off",
+    "claude-mem:oh-my-issues": "off"
+  }
+}

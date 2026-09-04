@@ -39,8 +39,11 @@ export type ResolvedTheme = 'light' | 'dark';
  * `#04121C` while the page rendered `#f5f7f9` and `#0a0e12`.
  */
 export const PAGE_COLOUR: Record<ResolvedTheme, string> = {
-  light: '#f5f7f9',
-  dark: '#0a0e12',
+  // The console's own ground, not the shared token's — see the override block in globals.css.
+  // These are what `--lum-page` actually renders here, and a status bar half a shade off the page
+  // under it is a visible seam across the top of an installed PWA.
+  light: '#f1f3f0',
+  dark: '#0e120f',
 };
 
 /** The attribute value to stamp on `<html>`, or null to stamp nothing and let the OS decide. */

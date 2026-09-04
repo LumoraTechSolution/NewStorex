@@ -10,6 +10,7 @@ import { ReportsScreen } from '@/components/ReportsScreen';
 import { StockScreen } from '@/components/StockScreen';
 import { UsersScreen } from '@/components/UsersScreen';
 import { LicenceNotice } from '@/components/LicenceNotice';
+import { UpdateNotice } from '@/components/UpdateNotice';
 import { useBackOffice, type Permission } from '@/lib/useBackOffice';
 import { useEntitlement, type Capability } from '@/lib/useEntitlement';
 import { useOperator } from '@/lib/useOperator';
@@ -165,6 +166,7 @@ export default function BackOfficePage() {
     <div className="flex h-full flex-col overflow-hidden">
       {/* The back office is where an owner will actually be when they read this (M4-09). */}
       <LicenceNotice />
+      <UpdateNotice />
 
       <header className="border-hair flex shrink-0 flex-wrap items-center justify-between gap-4 border-b px-4 py-3">
         <div>
@@ -183,7 +185,7 @@ export default function BackOfficePage() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <nav className="border-hair w-48 shrink-0 border-r p-3">
+        <nav aria-label="Back office" className="border-hair w-48 shrink-0 border-r p-3">
           <ul className="flex flex-col gap-1">
             {SECTIONS.map((entry) => {
               // Both gates, and either one closes it. Greyed rather than hidden in both cases: an
@@ -243,6 +245,7 @@ export default function BackOfficePage() {
           ) : section === 'REPORTS' ? (
             <ReportsScreen
               office={office}
+              branchCode={BRANCH_CODE}
               onOpenStock={() => {
                 setOpenStockOnHand(true);
                 setSection('STOCK');

@@ -90,7 +90,8 @@ class EntitlementStoreTest {
                         // The cloud sends nothing, because it resolves flags from a covering
                         // licence and there is none. Writing that through is the bug this guards.
                         List.of(),
-                        Instant.now()));
+                        Instant.now(),
+                        "Kandy Stores"));
 
         EntitlementStore.Cached cached = store.cached(tenantId).orElseThrow();
         assertThat(cached.licensed()).isFalse();
@@ -103,6 +104,40 @@ class EntitlementStoreTest {
 
         // And the last time it was genuinely fine is still on the row, so a screen can say when.
         assertThat(cached.licensedAt()).isNotNull();
+    }
+
+    /**
+     * The shop name the cloud answered with is kept, so the till can show whose token it is
+     * actually holding (V122).
+     *
+     * <p>This exists because of a real incident rather than for completeness: a stale
+     * machine-level {@code LUMORA_CLOUD_TOKEN} from another shop overrode the one entered at the
+     * till, and an afternoon's sales were ingested under the wrong tenant. Every layer was
+     * correct — the token authenticated, the cloud resolved the tenant from it and never from the
+     * request — which is precisely why nothing could report it. The till knew its own name, the
+     * cloud knew the token's, and the two were never in one place. This column is that place.
+     */
+    @Test
+    void theShopNameTheCloudAnsweredWithIsKept() {
+        store.record(tenantId, licensed("standard", List.of("back_office")));
+
+        assertThat(store.cached(tenantId).orElseThrow().tenantName()).isEqualTo("Kandy Stores");
+    }
+
+    /**
+     * A cloud that sends no name does not erase one already known.
+     *
+     * <p>The upsert coalesces for a specific case: a till talking to a cloud older than V122 gets
+     * null on every poll. Overwriting with that would blank the name a newer cloud had supplied,
+     * and the mismatch warning would quietly stop working — the failure mode being a guard that
+     * looks present and detects nothing.
+     */
+    @Test
+    void aCloudThatSendsNoNameDoesNotEraseTheOneAlreadyKnown() {
+        store.record(tenantId, licensed("standard", List.of("back_office")));
+        store.record(tenantId, licensed("standard", List.of("back_office")).withTenantName(null));
+
+        assertThat(store.cached(tenantId).orElseThrow().tenantName()).isEqualTo("Kandy Stores");
     }
 
     /**
@@ -145,7 +180,8 @@ class EntitlementStoreTest {
                 1,
                 5,
                 flags,
-                now);
+                now,
+                "Kandy Stores");
     }
 
     private static org.assertj.core.data.TemporalUnitOffset within1s() {

@@ -344,8 +344,15 @@ public class ProductImportService {
         }
 
         Map<String, Long> idsBySku = new LinkedHashMap<>();
+        // Kept alongside the ids because save() writes the whole row: an import that passed null
+        // here would silently clear every reorder point a shopkeeper had set by hand, on a screen
+        // whose whole promise is that it only changes what is in the file (M3-03).
+        Map<String, Integer> reorderPointsBySku = new LinkedHashMap<>();
         for (ProductRow product : products.list(tenantId)) {
             idsBySku.put(product.sku().toLowerCase(Locale.ROOT), product.id());
+            if (product.reorderPoint() != null) {
+                reorderPointsBySku.put(product.sku().toLowerCase(Locale.ROOT), product.reorderPoint());
+            }
         }
 
         Map<Integer, ImportRow> byLine = new LinkedHashMap<>();
@@ -372,7 +379,13 @@ public class ProductImportService {
                             row.taxMode(),
                             row.taxRateBp(),
                             categoryId,
-                            row.barcodes());
+                            row.barcodes(),
+                            // The import file has no reorder-point column, so an import never sets
+                            // one and never clears one. A new product arrives unwatched, because
+                            // inventing thresholds for a whole catalogue nobody configured is how
+                            // the low-stock screen fills with alerts that get ignored (V120); an
+                            // existing product keeps whatever was set by hand.
+                            reorderPointsBySku.get(row.sku().toLowerCase(Locale.ROOT)));
 
             // Through the same service the back-office form uses, deliberately. A second write
             // path would be a second place for the barcode rules to be enforced, and the one that

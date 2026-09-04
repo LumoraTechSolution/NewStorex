@@ -250,7 +250,8 @@ class OutboxCoverageTest {
                 "INCLUSIVE",
                 1800,
                 null,
-                List.of());
+                List.of(),
+                null);
     }
 
     private long supplierId(ShopFixture.Shop shop) {

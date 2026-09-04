@@ -353,8 +353,10 @@ public class SyncIngestService {
                 INSERT INTO shifts (
                     client_uuid, tenant_id, branch_code, terminal_code, status,
                     opened_at, opening_float_minor, closed_at, counted_cash_minor,
-                    expected_cash_minor, variance_minor, variance_reason, variance_note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    expected_cash_minor, variance_minor, variance_reason, variance_note,
+                    opened_by_client_uuid, opened_by_name,
+                    closed_by_client_uuid, closed_by_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET
                     status              = excluded.status,
                     closed_at           = excluded.closed_at,
@@ -362,7 +364,16 @@ public class SyncIngestService {
                     expected_cash_minor = excluded.expected_cash_minor,
                     variance_minor      = excluded.variance_minor,
                     variance_reason     = excluded.variance_reason,
-                    variance_note       = excluded.variance_note
+                    variance_note       = excluded.variance_note,
+                    -- M6-13. Only the closer moves on the second delivery; the opener was already
+                    -- correct and COALESCE keeps an older till's payload, which carries neither,
+                    -- from blanking what a newer one already told us.
+                    opened_by_client_uuid = COALESCE(excluded.opened_by_client_uuid,
+                                                     shifts.opened_by_client_uuid),
+                    opened_by_name        = COALESCE(excluded.opened_by_name, shifts.opened_by_name),
+                    closed_by_client_uuid = COALESCE(excluded.closed_by_client_uuid,
+                                                     shifts.closed_by_client_uuid),
+                    closed_by_name        = COALESCE(excluded.closed_by_name, shifts.closed_by_name)
                 WHERE shifts.status <> 'CLOSED'
                 """,
                 clientUuid,
@@ -377,7 +388,14 @@ public class SyncIngestService {
                 optionalLongOrNull(payload, "expectedCashMinor"),
                 optionalLongOrNull(payload, "varianceMinor"),
                 optionalText(payload, "varianceReason"),
-                optionalText(payload, "varianceNote"));
+                optionalText(payload, "varianceNote"),
+                // M6-13, and tolerant reads on purpose: a till that has not been updated sends a
+                // payload without these, and its shifts must keep syncing rather than start
+                // failing. Absent means "not recorded", which is the truth.
+                optionalUuid(payload, "openedByClientUuid"),
+                optionalText(payload, "openedByName"),
+                optionalUuid(payload, "closedByClientUuid"),
+                optionalText(payload, "closedByName"));
 
         // The denomination detail. Deleted and rewritten rather than merged: the close count is
         // a different phase from the open one, both arrive complete, and "what the drawer held"
@@ -634,8 +652,8 @@ public class SyncIngestService {
                         """
                         INSERT INTO products (
                             client_uuid, tenant_id, sku, name, price_minor, tax_mode, tax_rate_bp,
-                            category, active)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            category, reorder_point, active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET
                             sku = excluded.sku,
                             name = excluded.name,
@@ -643,6 +661,7 @@ public class SyncIngestService {
                             tax_mode = excluded.tax_mode,
                             tax_rate_bp = excluded.tax_rate_bp,
                             category = excluded.category,
+                            reorder_point = excluded.reorder_point,
                             active = excluded.active
                         RETURNING id
                         """,
@@ -655,6 +674,11 @@ public class SyncIngestService {
                         text(payload, "taxMode"),
                         (int) number(payload, "taxRateBp"),
                         optionalText(payload, "category"),
+                        // optionalLongOrNull, not optionalNumber: NULL means "not watched" and 0 is
+                        // a real threshold meaning "tell me when it is empty" (V120). Collapsing
+                        // the two would silently start watching every product a payload predating
+                        // M3-15 ever sent.
+                        optionalLongOrNull(payload, "reorderPoint"),
                         payload.path("active").asBoolean(true));
 
         // Replaced wholesale rather than merged: a barcode removed at the shop has to disappear
@@ -708,17 +732,22 @@ public class SyncIngestService {
     private void upsertCustomer(long tenantId, UUID clientUuid, JsonNode payload) {
         jdbc.update(
                 """
-                INSERT INTO customers (client_uuid, tenant_id, name, phone, active)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO customers (client_uuid, tenant_id, name, phone, active, erased_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT (tenant_id, client_uuid) DO UPDATE SET
                     name = excluded.name,
                     phone = excluded.phone,
-                    active = excluded.active
+                    active = excluded.active,
+                    erased_at = excluded.erased_at
                 """,
                 clientUuid,
                 tenantId,
                 text(payload, "name"),
                 optionalText(payload, "phone"),
-                payload.path("active").asBoolean(true));
+                payload.path("active").asBoolean(true),
+                // M5-10. Absent on every payload written before V123 and on every customer who was
+                // never erased, so the tolerant read rather than a required field - a till that has
+                // not been updated must not start failing to sync its customers.
+                optionalTimestamp(payload, "erasedAt"));
     }
 }

@@ -18,16 +18,24 @@ import { expect, test, type Till } from './till';
  *
  * Not "we never called `page.click()`" — that would only be a statement about the test.
  * Every pointer-shaped event the window receives is recorded in the capture phase, and the
- * sale must complete having produced **none of them**. That catches the real regression:
- * someone adds a control reachable only by mouse, and the keyboard path quietly stops
- * covering the whole sale.
+ * sale must complete having produced **none a hand could have caused**. That catches the
+ * real regression: someone adds a control reachable only by mouse, and the keyboard path
+ * quietly stops covering the whole sale.
  *
- * Note that a keyboard-activated `<button>` fires a synthetic `click` with `detail === 0`.
- * The specs below assert zero pointer events of any kind, which is stricter — and currently
- * true, because the till drives everything through document-level key handlers rather than
- * focused buttons. If that ever changes deliberately, the assertion to keep is
- * `detail === 0`: that is the line between "activated from the keyboard" and "a hand left
- * the keyboard".
+ * ## The predicate changed in M6, deliberately
+ *
+ * These specs used to assert zero pointer events *of any kind*, and this header said that
+ * if that ever changed deliberately, the assertion to keep is `detail === 0` — the line
+ * between "activated from the keyboard" and "a hand left the keyboard". M6 gave the till
+ * real touch controls, so that clause has fired: the assertion is now `handEvents()`, which
+ * filters out precisely the synthetic `detail: 0` click a keyboard-activated `<button>`
+ * fires and keeps everything else.
+ *
+ * This is a weaker predicate and it was weakened on purpose, once, with the reason written
+ * down. It is still exact for what Gate M1 is about — no finger, no mouse — because nothing
+ * but a real pointing device can produce a `pointerdown` or a click with a non-zero count.
+ * Do not weaken it further; if a keyboard spec starts recording hand events, the till has
+ * grown a control the keyboard cannot reach, which is the bug this file exists to catch.
  */
 
 /** Seeded in `dev-seed.sql`. Tea is standard-rated, bread is zero-rated (M1-18). */
@@ -145,7 +153,7 @@ test.describe('a sale completed without touching a mouse (M1-16)', () => {
     );
     expect(outbox).toBe('1');
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 
   test('clears the cart and advances the invoice number across consecutive sales', async ({
@@ -172,7 +180,7 @@ test.describe('a sale completed without touching a mouse (M1-16)', () => {
     expect(sequences[1]).toBe(sequences[0]! + 1);
     expect(sequences[2]).toBe(sequences[1]! + 1);
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 });
 
@@ -221,7 +229,7 @@ test.describe('a mixed-rate basket, end to end (M1-18)', () => {
     expect(receipt).toMatch(/\n\s+18%/);
     expect(receipt).toContain('700.00'); // total: 250.00 bread + 450.00 tea
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 });
 
@@ -240,7 +248,7 @@ test.describe('the scanner and the cashier are not the same device (M1-09)', () 
     await expect(tenderOverlay(till)).toHaveCount(0);
     await expect(statusLine(till)).toHaveCount(0);
 
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 
   /**
@@ -256,7 +264,7 @@ test.describe('the scanner and the cashier are not the same device (M1-09)', () 
     await till.page.keyboard.press('Enter');
 
     await expectInCart(till, TEA.name);
-    expect(await till.pointerEvents()).toEqual([]);
+    expect(await till.handEvents()).toEqual([]);
   });
 });
 
@@ -283,5 +291,45 @@ test.describe('the pointer detector itself', () => {
     // `detail > 0` is what separates a pointing device from a button activated by Enter —
     // the discriminator the spec header points future readers at.
     expect(events.some((e) => e.type === 'click' && e.detail > 0)).toBe(true);
+
+    // And the filter every other spec now asserts on must survive the trip: a real click
+    // has to come out the far side of `handEvents()`. Without this the M6 predicate could
+    // be over-filtered into always returning nothing, and all ten assertions above would
+    // pass on a till you could only operate with a mouse.
+    const hand = await till.handEvents();
+    expect(hand.length).toBeGreaterThan(0);
+    expect(hand.some((e) => e.type === 'click' && e.detail > 0)).toBe(true);
+  });
+
+  /**
+   * The other half of the same guard, and the one the M6 predicate actually turns on.
+   *
+   * `handEvents()` must drop the synthetic click a `<button>` fires when the keyboard
+   * activates it — otherwise every keyboard spec breaks the moment the till grows a focused
+   * button. Proving the filter *keeps* a real click is not the same as proving it *drops*
+   * the synthetic one, so both directions get a test.
+   *
+   * The click is dispatched rather than produced by focusing a button and pressing Enter,
+   * and that detour is itself a finding worth keeping. A button on this screen **cannot**
+   * hold focus: `ScanField.reclaim()` takes the caret back on `focusin`, by design (M1-08),
+   * so `toggle.focus()` followed by Enter sends the Enter to the scan field and no click is
+   * ever synthesised. What is under test here is the shape of the event, not the route it
+   * travelled, so `click({detail: 0})` — byte-identical to what keyboard activation fires —
+   * is the honest way to produce one.
+   */
+  test('ignores a button activated from the keyboard', async ({ till }) => {
+    await till.page
+      .getByRole('button', { name: /Switch to (light|dark) mode/ })
+      .evaluate((button) =>
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 })),
+      );
+
+    // The window saw a click — the browser synthesises exactly this for keyboard
+    // activation, with a click count of zero...
+    const all = await till.pointerEvents();
+    expect(all.some((e) => e.type === 'click' && e.detail === 0)).toBe(true);
+
+    // ...and no hand produced it.
+    expect(await till.handEvents()).toEqual([]);
   });
 });

@@ -69,10 +69,28 @@ public class InvoiceNumberAllocator {
     /** See {@link #taxInvoiceNumber} on why this is a hyphen and not an underscore. */
     private static final String SEPARATOR = "-";
 
-    private static final long DEFAULT_RANGE_START = 1;
+    /**
+     * The first number in a default block.
+     *
+     * <p>Public, with {@link #DEFAULT_RANGE_END}, so M5-03's first-run setup can reserve exactly
+     * the block this class would otherwise create lazily on the first sale. The alternative was
+     * for setup to write {@code 1} and {@code 999_999} itself, which is the same two numbers in a
+     * second place — and the day one of them changes, a provisioned till and a lazily-created one
+     * would hold different blocks while both looked correct.
+     */
+    public static final long DEFAULT_RANGE_START = 1;
 
     /** Wide enough that a single till will not exhaust it in any realistic lifetime. */
     private static final long DEFAULT_RANGE_SIZE = 999_999;
+
+    /**
+     * The last number in a default block — the bound {@link #allocate} refuses to climb past.
+     *
+     * <p>Derived rather than written out, so the range is stated once. Two places computing
+     * {@code start + size - 1} is two places that can disagree by one, and the one that disagrees
+     * quietly hands out a number outside the block a shop's cloud rows were reconciled against.
+     */
+    public static final long DEFAULT_RANGE_END = DEFAULT_RANGE_START + DEFAULT_RANGE_SIZE - 1;
 
     private final JdbcTemplate jdbc;
 
@@ -102,7 +120,7 @@ public class InvoiceNumberAllocator {
             String terminalCode,
             DocType docType,
             Instant issuedAt) {
-        long defaultRangeEnd = DEFAULT_RANGE_START + DEFAULT_RANGE_SIZE - 1;
+        long defaultRangeEnd = DEFAULT_RANGE_END;
 
         // One atomic statement: two concurrent documents cannot be handed the same number. On
         // first use the row is created with the default block and 1 is returned. On every later

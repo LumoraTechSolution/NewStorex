@@ -62,16 +62,19 @@ public class CustomerController {
     private static final int HISTORY_LIMIT = 50;
 
     private final CustomerService customers;
+    private final CustomerPrivacyService privacy;
     private final SessionService sessions;
     private final ShiftService shifts;
     private final LocalShop shop;
 
     public CustomerController(
             CustomerService customers,
+            CustomerPrivacyService privacy,
             SessionService sessions,
             ShiftService shifts,
             LocalShop shop) {
         this.customers = customers;
+        this.privacy = privacy;
         this.sessions = sessions;
         this.shifts = shifts;
         this.shop = shop;
@@ -162,6 +165,44 @@ public class CustomerController {
             @PathVariable long customerId) {
         sessions.require(bearer, Permission.BACK_OFFICE);
         return customers.history(shop.soleTenantId(), customerId, HISTORY_LIMIT);
+    }
+
+    // ------------------------------------------------------------------------------ PDPA
+
+    /**
+     * Everything the shop holds about one person (M5-10).
+     *
+     * <p>Behind a back-office session like the history endpoint beside it, and for a stronger
+     * reason: this is the most concentrated piece of personal data the system can produce, and an
+     * export of the wrong customer handed to the wrong person is itself the breach the law is
+     * about. The till cannot call it.
+     */
+    @GetMapping("/api/back-office/customers/{customerId}/data-export")
+    public CustomerPrivacyService.DataExport dataExport(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String bearer,
+            @PathVariable long customerId) {
+        sessions.require(bearer, Permission.BACK_OFFICE);
+        return privacy.export(shop.soleTenantId(), customerId);
+    }
+
+    /**
+     * Destroys the personal data on one customer, permanently (M5-10).
+     *
+     * <p>{@code POST} and not {@code DELETE}. The row is not deleted and saying so in the method is
+     * the honest description — what happens is that fields are overwritten and an audit column is
+     * written, which is a creation as much as a removal. A {@code DELETE} here would also read, to
+     * anybody adding to this file later, as an invitation to make it actually delete.
+     *
+     * <p>The operator is named from their own session rather than from the request body. Who
+     * actioned an erasure is the only thing anybody will ask afterwards, and a client-supplied
+     * answer to that question is worth nothing.
+     */
+    @PostMapping("/api/back-office/customers/{customerId}/erase")
+    public CustomerPrivacyService.Erased erase(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String bearer,
+            @PathVariable long customerId) {
+        var operator = sessions.require(bearer, Permission.BACK_OFFICE);
+        return privacy.erase(shop.soleTenantId(), customerId, operator.id());
     }
 
     // -------------------------------------------------------------------------- payloads

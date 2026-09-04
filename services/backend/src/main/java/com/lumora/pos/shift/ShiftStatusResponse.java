@@ -16,6 +16,13 @@ import java.util.UUID;
  *
  * @param saleCount and {@code cashMovementCount} are activity, not money. They tell a cashier the
  *     till is theirs and roughly how busy it has been, and neither narrows down the drawer total.
+ * @param operatorName who opened this shift — {@code shifts.opened_by}, resolved to a display
+ *     name. Every sale rung up during the shift is attributed to them (see {@code ShiftService}),
+ *     so this is the honest answer to "who is on this till", and the till can now show it rather
+ *     than leaving a cashier to remember whether the person before them signed off.
+ *     <p>Deliberately the name and not the code: the code is a credential people type, and putting
+ *     it permanently on a screen that faces a shop floor is how it stops being one. Null only when
+ *     no shift is open.
  */
 public record ShiftStatusResponse(
         boolean open,
@@ -24,9 +31,10 @@ public record ShiftStatusResponse(
         Instant openedAt,
         Long openingFloatMinor,
         Integer saleCount,
-        Integer cashMovementCount) {
+        Integer cashMovementCount,
+        String operatorName) {
 
     public static ShiftStatusResponse closed() {
-        return new ShiftStatusResponse(false, null, null, null, null, null, null);
+        return new ShiftStatusResponse(false, null, null, null, null, null, null, null);
     }
 }

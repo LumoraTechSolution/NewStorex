@@ -65,7 +65,13 @@ public class CustomerService {
             boolean active,
             int saleCount,
             long spentMinor,
-            Instant lastSeenAt) {}
+            Instant lastSeenAt,
+            /**
+             * Set when this person's data was destroyed under PDPA (M5-10). Present means every
+             * personal field on the row has already been overwritten, so what is displayed beside
+             * it is a marker rather than a name.
+             */
+            Instant erasedAt) {}
 
     /** One line of somebody's purchase history. */
     public record CustomerSale(
@@ -75,6 +81,12 @@ public class CustomerService {
 
     /**
      * Search by name or by a leading run of digits.
+     *
+     * <p><b>An erased customer never reaches the till</b> (M5-10), and that needs no clause here:
+     * erasure sets {@code active = false} and {@code setActive} refuses to undo it, so the
+     * active-only branch the till uses can never return one. The back office sees them when it asks
+     * for inactive rows, deliberately — nothing personal is left on such a row, and a shopkeeper
+     * asked "did you erase my details" has to be able to point at the answer.
      *
      * <p>One box, two searches, decided by what was typed: digits are a phone prefix, anything else
      * is a name substring. Two fields would be more explicit and would also be two fields, and the
@@ -231,7 +243,7 @@ public class CustomerService {
             long tenantId, long customerId, String name, String phone, String email, String note) {
         String digits = requireSaneOptionalPhone(phone);
         requireSaneName(name);
-        byId(tenantId, customerId);
+        refuseIfErased(byId(tenantId, customerId));
 
         try {
             jdbc.update(
@@ -265,7 +277,7 @@ public class CustomerService {
      */
     @Transactional
     public CustomerRow setActive(long tenantId, long customerId, boolean active) {
-        byId(tenantId, customerId);
+        refuseIfErased(byId(tenantId, customerId));
         jdbc.update(
                 "UPDATE customers SET active = ? WHERE tenant_id = ? AND id = ?",
                 active,
@@ -287,7 +299,7 @@ public class CustomerService {
      */
     private static String listSql(String tail) {
         return """
-               SELECT c.id, c.client_uuid, c.name, c.phone, c.email, c.note, c.active,
+               SELECT c.id, c.client_uuid, c.name, c.phone, c.email, c.note, c.active, c.erased_at,
                       (SELECT count(*) FROM sales s WHERE s.customer_id = c.id)        AS sale_count,
                       (SELECT COALESCE(sum(s.total_minor), 0) FROM sales s
                         WHERE s.customer_id = c.id)                                    AS spent_minor,
@@ -300,6 +312,7 @@ public class CustomerService {
 
     private static CustomerRow readRow(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
         OffsetDateTime lastSeen = rs.getObject("last_seen_at", OffsetDateTime.class);
+        OffsetDateTime erasedAt = rs.getObject("erased_at", OffsetDateTime.class);
         return new CustomerRow(
                 rs.getLong("id"),
                 rs.getObject("client_uuid", UUID.class),
@@ -310,7 +323,8 @@ public class CustomerService {
                 rs.getBoolean("active"),
                 rs.getInt("sale_count"),
                 rs.getLong("spent_minor"),
-                lastSeen == null ? null : lastSeen.toInstant());
+                lastSeen == null ? null : lastSeen.toInstant(),
+                erasedAt == null ? null : erasedAt.toInstant());
     }
 
     /**
@@ -378,12 +392,32 @@ public class CustomerService {
      * redelivery a no-op and arrival order irrelevant, which is what an offline shop's backlog
      * needs. Email and note are deliberately absent; see the class comment.
      */
+    /**
+     * An erased customer is not editable, and not reinstatable either (M5-10).
+     *
+     * <p>Both would be worse than they look. Editing means typing a name back onto a row the shop
+     * promised to blank; reinstating means an "inactive" state that an erasure could be mistaken
+     * for, which is exactly the confusion `erased_at` exists to prevent. Somebody who comes back
+     * to the shop is a new customer, and that is the honest record of what happened.
+     */
+    private static void refuseIfErased(CustomerRow customer) {
+        if (customer.erasedAt() != null) {
+            throw new RejectedException(
+                    "This customer's data was erased on "
+                            + customer.erasedAt()
+                            + " and cannot be changed. Add a new customer instead.");
+        }
+    }
+
     private void enqueue(long tenantId, CustomerRow customer) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("clientUuid", customer.clientUuid().toString());
         payload.put("name", customer.name());
         payload.put("phone", customer.phone());
         payload.put("active", customer.active());
+        // Null for everybody who was never erased, which is almost everybody. Sent on every
+        // customer rather than only on an erasure so the cloud converges from any arrival order.
+        payload.put("erasedAt", customer.erasedAt() == null ? null : customer.erasedAt().toString());
         outbox.enqueue(tenantId, "customer", customer.clientUuid(), payload);
     }
 }

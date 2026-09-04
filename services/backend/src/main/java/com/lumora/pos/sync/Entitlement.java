@@ -29,6 +29,18 @@ import java.util.List;
  *     {@code EntitlementStore#record} for what the till does with that.
  * @param asOf when the cloud computed this. The till stores it so a stale answer is legible as one
  *     rather than looking current.
+ * @param tenantName <b>which shop the cloud thinks is calling</b>, resolved from the token rather
+ *     than from anything the till said. It is here because of a real incident: a stale
+ *     machine-level {@code LUMORA_CLOUD_TOKEN} left over from another shop overrode the one just
+ *     entered at the till, and an afternoon's sales were filed under the wrong tenant. Every layer
+ *     behaved correctly — the token authenticated, the tenant was derived from it and never from
+ *     the request body, the sale was recorded exactly where the credential said — and that is
+ *     precisely why nothing could report it. The till knew its own name and the cloud knew the
+ *     token's, and the two were never in the same place at the same time.
+ *     <p>So the cloud now says whose key it just accepted, and the till can put that on screen
+ *     next to the shop's own name. A mismatch stops being a discrepancy discovered in a report
+ *     next month and becomes two different words a shopkeeper can see at a glance. Nullable, for
+ *     the {@link #unlicensed()} case and for a till syncing against an older cloud.
  */
 public record Entitlement(
         boolean licensed,
@@ -39,10 +51,34 @@ public record Entitlement(
         Integer maxTerminals,
         Integer maxUsers,
         List<String> flags,
-        Instant asOf) {
+        Instant asOf,
+        String tenantName) {
 
     /** A shop the cloud has no licence row for at all. Rare, and not the same as lapsed. */
     public static Entitlement unlicensed() {
-        return new Entitlement(false, null, null, null, null, null, null, List.of(), Instant.now());
+        return new Entitlement(
+                false, null, null, null, null, null, null, List.of(), Instant.now(), null);
+    }
+
+    /**
+     * The same answer, with the shop's name attached.
+     *
+     * <p>A separate step rather than a constructor argument threaded through
+     * {@link #unlicensed()}: an unlicensed shop still has a name, and the cloud should say it —
+     * a till whose licence has lapsed is exactly the one whose operator is most likely to be
+     * checking whether it is even talking to the right shop.
+     */
+    public Entitlement withTenantName(String name) {
+        return new Entitlement(
+                licensed,
+                planCode,
+                planName,
+                licenceStartsAt,
+                licenceExpiresAt,
+                maxTerminals,
+                maxUsers,
+                flags,
+                asOf,
+                name);
     }
 }

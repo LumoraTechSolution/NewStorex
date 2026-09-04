@@ -88,6 +88,28 @@
             <scope>runtime</scope>
         </dependency>
 
+
+        <!--
+          Object storage for M5-06's cloud backups, and the only third-party SDK in this
+          service. Hand-rolling SigV4 would save about 10 MB in the shop's installer - the
+          same jar ships to the till - and would put a signing bug between a shop and the
+          only off-site copy of its trading history. That is the wrong thing to save on.
+
+          The Netty async client is excluded: this uploads one archive twice a day through
+          the blocking client and nothing here is ever asynchronous.
+        -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>2.28.29</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>netty-nio-client</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
         <!--
           Tests run against a real Postgres, never H2. This system's correctness rests on
           Postgres-specific behaviour - ON CONFLICT upserts keyed on client_uuid, partial

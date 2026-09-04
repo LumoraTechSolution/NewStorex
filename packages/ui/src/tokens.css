@@ -45,6 +45,15 @@
    * message on a till that must never be easy to miss.
    */
   --lum-ok: #0a7d0a; /* 4.7:1 on --lum-page */
+  /*
+   * Text on a filled --lum-ok surface, and it **inverts between the themes** — which is
+   * the whole reason it is a token rather than a literal. The light green is dark enough
+   * to need white on it (5.3:1, and near-black would be 3.5:1); the dark theme's brighter
+   * green is the other way round (8.5:1 with near-black, and white fails at 2.2:1). The
+   * only filled-green control on the till is the PAY key, and a hardcoded colour there
+   * would fail AA in exactly one theme — silently, since nothing tests a colour.
+   */
+  --lum-ok-ink: #ffffff;
   --lum-danger: #bf2d2d; /* 5.1:1 */
   --lum-pending: #8f5d00; /* 5.0:1 */
 
@@ -94,6 +103,7 @@
   --lum-accent: #0fa0f3;
   --lum-accent-ink: #06121c;
   --lum-ok: #3ec93e;
+  --lum-ok-ink: #05230a; /* 7.7:1 on --lum-ok; white would be 2.2:1 */
   --lum-danger: #ed6a6a;
   --lum-pending: #e8a33d;
 }
@@ -119,6 +129,7 @@
     --lum-accent: #0fa0f3;
     --lum-accent-ink: #06121c;
     --lum-ok: #3ec93e;
+    --lum-ok-ink: #05230a;
     --lum-danger: #ed6a6a;
     --lum-pending: #e8a33d;
   }

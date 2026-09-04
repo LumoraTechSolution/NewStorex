@@ -7,6 +7,7 @@ import com.lumora.pos.report.SalesReportService.TopProduct;
 import com.lumora.pos.shop.LocalShop;
 import com.lumora.pos.user.Permission;
 import com.lumora.pos.web.RejectedException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -94,12 +95,31 @@ public class SalesReportController {
         return reports.topProducts(shop.soleTenantId(), start, end, clamp(limit));
     }
 
+    /**
+     * The shift history, a window at a time (M6-11).
+     *
+     * <p>No parameters at all still means "the newest thirty", which is what every existing caller
+     * asks for and what the screen opens on. {@code from}/{@code to} narrow it to a range somebody
+     * named; {@code beforeClosedAt} and {@code beforeId} continue after the last row they have.
+     *
+     * <p>The two are usable together, and that combination is the one that matters: "last week" is
+     * often more than thirty shifts on a busy multi-till shop, and a range that silently truncated
+     * would be worse than no range at all.
+     */
     @GetMapping("/shifts")
     public List<ClosedShift> closedShifts(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String bearer,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) Instant beforeClosedAt,
+            @RequestParam(required = false) Long beforeId,
             @RequestParam(defaultValue = "30") int limit) {
         sessions.require(bearer, Permission.BACK_OFFICE);
-        return reports.closedShifts(shop.soleTenantId(), clamp(limit));
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new RejectedException("The start of the range is after its end.");
+        }
+        return reports.closedShifts(
+                shop.soleTenantId(), from, to, beforeClosedAt, beforeId, clamp(limit));
     }
 
     /**

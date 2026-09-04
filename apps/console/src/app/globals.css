@@ -4,8 +4,97 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * The console's own ground (M6-14).
+ *
+ * <h2>Why this is here and not in packages/ui</h2>
+ *
+ * `tokens.css` is shared with the till, and the till is the dark surface this product is judged
+ * on. These overrides are the console's alone — a warm neutral with a green cast, the inside of a
+ * tea packet — chosen so the StoreX blue reads as identity against it rather than as chrome. Put
+ * in the shared file they would repaint a cashier's screen as a side effect of redesigning an
+ * owner's, which is exactly the sort of change nobody would connect to its cause a month later.
+ *
+ * Only the ground and the ink move. `--lum-accent`, `--lum-danger`, `--lum-pending` and `--lum-ok`
+ * stay exactly as the till has them: D3 is a contrast rule with measured numbers behind it, and a
+ * console that quietly ran a second blue is how "the same product" stops looking like one.
+ *
+ * <h2>The selectors are copied from tokens.css deliberately</h2>
+ *
+ * The dark palette there is set by `:root[data-theme='dark']:not([data-surface='terminal'])` and by
+ * a media query with the same shape. A plainer selector here would lose to it on specificity and
+ * the dark console would silently keep the blue-grey ground. These match it exactly and win on
+ * source order instead. Change one, change both — the same warning tokens.css carries.
+ */
+:root {
+  --lum-page: #f1f3f0;
+  --lum-surface: #fbfcfa;
+  --lum-ink: #141b18;
+  --lum-ink-2: #4a544f;
+  /* The prototype's muted ink measured 3.3:1 on this page, which §A does not allow for text —
+     the eyebrow labels and every hint on the screen are set in it. Same hue, dragged down to
+     4.9:1. "Muted" is not a WCAG exemption; it was not one on the old ground either. */
+  --lum-ink-3: #626c66;
+  --lum-hair: #dce1dc;
+
+  --lum-font-sans: var(--font-sans), 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --lum-font-mono: var(--font-mono), ui-monospace, 'Cascadia Mono', Menlo, monospace;
+  /*
+   * Money, and only money. A serif on a dashboard is a risk taken on purpose: the figure an owner
+   * opens this app for should look like it was written in a ledger rather than emitted by a
+   * reporting tool, and Fraunces is the one thing on the page that says which product this is
+   * before the wordmark does.
+   */
+  --lum-font-display: var(--font-display), Georgia, 'Times New Roman', serif;
+}
+
+:root[data-theme='dark']:not([data-surface='terminal']) {
+  --lum-page: #0e120f;
+  --lum-surface: #161b17;
+  --lum-ink: #e8ede8;
+  --lum-ink-2: #aab3ac;
+  --lum-ink-3: #7e8881; /* 5.1:1 on the dark page */
+  --lum-hair: #28302a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']):not([data-surface='terminal']) {
+    --lum-page: #0e120f;
+    --lum-surface: #161b17;
+    --lum-ink: #e8ede8;
+    --lum-ink-2: #aab3ac;
+    --lum-ink-3: #7e8881;
+    --lum-hair: #28302a;
+  }
+}
+
 body {
   background: var(--lum-page);
   color: var(--lum-ink);
   font-family: var(--lum-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * The pulse's one animation (M6-14).
+ *
+ * <p>Bars grow from the centre line in the order the day happened, which is the only motion in the
+ * console. It is here rather than in Tailwind's config because each bar carries its own delay as an
+ * inline style, and a utility class cannot take one.
+ */
+@keyframes lum-rise {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+.lum-pulse-bar {
+  animation: lum-rise 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) backwards;
+}
+
+/* A shop's takings redrawing themselves is decoration, and decoration is the first thing to go. */
+@media (prefers-reduced-motion: reduce) {
+  .lum-pulse-bar {
+    animation: none;
+  }
 }

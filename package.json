@@ -2,13 +2,15 @@
   "name": "lumora-pos",
   "version": "0.0.0",
   "private": true,
-  "description": "Lumora POS — offline-first point of sale for Sri Lankan retail",
+  "description": "Lumora POS \u2014 offline-first point of sale for Sri Lankan retail",
   "packageManager": "pnpm@9.15.4",
   "engines": {
     "node": ">=20.11"
   },
   "scripts": {
     "build": "turbo run build",
+    "stage:runtime": "node scripts/stage-runtime.mjs",
+    "dist": "node scripts/build-installer.mjs",
     "dev": "turbo run dev",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
@@ -23,6 +25,7 @@
     "db:offline": "docker compose stop db-cloud",
     "db:online": "docker compose start db-cloud",
     "db:dump:cloud": "node scripts/dump-cloud.mjs",
+    "check:cloud": "node scripts/e2e-cloud-check.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
