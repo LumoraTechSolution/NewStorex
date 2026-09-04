@@ -4,6 +4,7 @@ import com.lumora.pos.shop.LocalShop;
 import com.lumora.pos.stock.GoodsReceiptService.ReceiptLine;
 import com.lumora.pos.stock.GoodsReceiptService.ReceiptRow;
 import com.lumora.pos.stock.StockAdjustmentService.AdjustmentRow;
+import com.lumora.pos.stock.StockOnHandService.LowStockRow;
 import com.lumora.pos.stock.StockOnHandService.OnHandRow;
 import com.lumora.pos.stock.StockOnHandService.OnHandSummary;
 import com.lumora.pos.stock.StocktakeService.StocktakeRow;
@@ -231,6 +232,23 @@ public class StockController {
                         shop.branch(branchCode).id(),
                         Boolean.TRUE.equals(includeDiscontinued));
         return new OnHandListResponse(rows, onHandService.summarise(rows));
+    }
+
+    /**
+     * What the shop is about to run out of (M3-15).
+     *
+     * <p>{@code BACK_OFFICE} rather than {@code MANAGE_STOCK}, unlike its neighbours above. This is
+     * a report — it is a tab on the reports screen and it writes nothing — and gating it behind the
+     * permission to <em>change</em> stock would hide it from somebody trusted with every other
+     * report about the same shop. The endpoints that move stock keep MANAGE_STOCK.
+     */
+    @GetMapping("/stock-on-hand/low")
+    public List<LowStockRow> lowStock(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false)
+                    String bearer,
+            @RequestParam("branchCode") String branchCode) {
+        sessions.require(bearer, Permission.BACK_OFFICE);
+        return onHandService.lowStock(shop.soleTenantId(), shop.branch(branchCode).id());
     }
 
     // ---------------------------------------------------------------------- stocktakes

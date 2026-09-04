@@ -32,6 +32,12 @@ export interface ShiftStatus {
   readonly openingFloatMinor: number | null;
   readonly saleCount: number | null;
   readonly cashMovementCount: number | null;
+  /**
+   * Who opened this shift, by display name. Every sale rung up now is attributed to them, so this
+   * is the honest answer to "who is on this till" — and it is shown in the header rather than left
+   * to a cashier to remember whether the person before them signed off. Null when nothing is open.
+   */
+  readonly operatorName: string | null;
 }
 
 const CLOSED: ShiftStatus = {
@@ -42,6 +48,7 @@ const CLOSED: ShiftStatus = {
   openingFloatMinor: null,
   saleCount: null,
   cashMovementCount: null,
+  operatorName: null,
 };
 
 export function useShift(branchCode: string, terminalCode: string) {

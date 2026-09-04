@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -85,11 +87,27 @@ describe('beforeFirstPaintScript', () => {
 });
 
 describe('PAGE_COLOUR', () => {
-  it('matches --lum-page in the design tokens', () => {
-    // Hardcoded here on purpose, as the assertion that these two files agree. Before M4-11 the
-    // metadata said #FFFFFF and #04121C while the page rendered these, which put a seam across
-    // the top of an installed PWA in both themes.
-    expect(PAGE_COLOUR.light).toBe('#f5f7f9');
-    expect(PAGE_COLOUR.dark).toBe('#0a0e12');
+  /**
+   * Read out of the stylesheet rather than typed here twice.
+   *
+   * <p>Before M4-11 the metadata said #FFFFFF and #04121C while the page rendered something else,
+   * which put a seam across the top of an installed PWA in both themes — and a hardcoded copy of
+   * the right answer is the same bug waiting for the next repaint. M6-14 was that repaint: the
+   * console took its own warm ground, and this now fails if only one of the two files moves.
+   */
+  const css = readFileSync(new URL('../app/globals.css', import.meta.url), 'utf8');
+  const grounds = [...css.matchAll(/--lum-page:\s*(#[0-9a-f]{6})/gi)].map((match) => match[1]);
+
+  it('matches --lum-page in the console’s own tokens', () => {
+    expect(grounds[0]).toBe(PAGE_COLOUR.light);
+    expect(grounds[1]).toBe(PAGE_COLOUR.dark);
+  });
+
+  it('keeps the two dark blocks saying the same thing', () => {
+    // The dark palette is stated twice — once for an explicit choice and once for the OS
+    // preference — because a media query cannot join a selector list. tokens.css carries the same
+    // warning; this is the thing that enforces it.
+    expect(grounds).toHaveLength(3);
+    expect(grounds[2]).toBe(grounds[1]);
   });
 });

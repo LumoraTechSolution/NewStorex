@@ -23,6 +23,13 @@ import type { BackOffice } from '@/lib/useBackOffice';
  * and now names nobody is a worse record than one naming a customer who has left. Erasure under
  * PDPA (M5-10) is a deliberate act that has to decide what happens to the invoices; a delete button
  * would make that decision by accident.
+ *
+ * <h2>The two PDPA buttons, and why erase does not look like the others</h2>
+ *
+ * A person may ask for a copy of what is held about them, and may ask for it to be destroyed. The
+ * first is a download and needs no ceremony. The second cannot be undone by anybody, at any price,
+ * so it is behind an explicit panel that says in words what will happen and what will not — rather
+ * than a confirm dialog, which is the control people learn to dismiss without reading.
  */
 interface CustomerRow {
   id: number;
@@ -35,6 +42,8 @@ interface CustomerRow {
   saleCount: number;
   spentMinor: number;
   lastSeenAt: string | null;
+  /** Set once this person's data has been destroyed (M5-10). Nothing about them is editable after. */
+  erasedAt: string | null;
 }
 
 interface CustomerSale {
@@ -64,6 +73,8 @@ export function CustomersScreen({ office }: { office: BackOffice }) {
   const [history, setHistory] = useState<{ id: number; sales: CustomerSale[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** The customer whose erasure is being confirmed. Never more than one at a time. */
+  const [erasing, setErasing] = useState<CustomerRow | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -123,6 +134,48 @@ export function CustomersScreen({ office }: { office: BackOffice }) {
             }),
       );
       if (saved) setDraft(null);
+    },
+    [act, office],
+  );
+
+  /**
+   * Downloads everything the shop holds about one person, as a file they can be handed.
+   *
+   * A file rather than a screen. What somebody exercising this right needs is something they can
+   * keep, forward and check later — and a shopkeeper reading numbers off a monitor to a customer
+   * has not answered the request.
+   */
+  const exportData = useCallback(
+    async (customer: CustomerRow) => {
+      try {
+        const data = await office.request<unknown>(
+          `/api/back-office/customers/${customer.id}/data-export`,
+        );
+        const url = URL.createObjectURL(
+          new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+        );
+        const link = document.createElement('a');
+        link.href = url;
+        // The customer id, not their name: a file named after a person is a piece of personal
+        // data sitting in a downloads folder, which is the opposite of the point.
+        link.download = `customer-${customer.id}-data.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+        setError(null);
+        setNotice('Data export downloaded.');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [office],
+  );
+
+  const erase = useCallback(
+    async (customer: CustomerRow) => {
+      const done = await act('Personal data erased.', () =>
+        office.request(`/api/back-office/customers/${customer.id}/erase`, { method: 'POST' }),
+      );
+      if (done) setErasing(null);
     },
     [act, office],
   );
@@ -221,10 +274,16 @@ export function CustomersScreen({ office }: { office: BackOffice }) {
                 <div className="flex flex-col">
                   <span className="text-ink font-semibold">
                     {customer.name}
-                    {!customer.active && (
+                    {customer.erasedAt !== null ? (
                       <span className="text-ink-3 ml-2 text-xs uppercase tracking-wider">
-                        deactivated
+                        erased {shortDate(customer.erasedAt)}
                       </span>
+                    ) : (
+                      !customer.active && (
+                        <span className="text-ink-3 ml-2 text-xs uppercase tracking-wider">
+                          deactivated
+                        </span>
+                      )
                     )}
                   </span>
                   <span className="text-ink-3 text-sm">
@@ -278,11 +337,62 @@ export function CustomersScreen({ office }: { office: BackOffice }) {
                       )
                     }
                     className="border-hair text-ink-2 min-h-touch rounded border px-3"
+                    disabled={customer.erasedAt !== null}
                   >
                     {customer.active ? 'Deactivate' : 'Reinstate'}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => void exportData(customer)}
+                    className="border-hair text-ink-2 min-h-touch rounded border px-3"
+                    title="Download everything the shop holds about this person"
+                  >
+                    Export data
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setErasing(customer)}
+                    disabled={customer.erasedAt !== null}
+                    className="border-danger text-danger min-h-touch rounded border px-3 disabled:opacity-40"
+                  >
+                    Erase…
+                  </button>
                 </div>
               </div>
+
+              {erasing?.id === customer.id && (
+                <div className="border-danger flex flex-col gap-3 rounded border p-3">
+                  <p className="text-ink text-sm font-semibold">
+                    Erase everything the shop holds about {customer.name}?
+                  </p>
+                  <p className="text-ink-2 text-sm">
+                    Their name, phone number, email, note, TIN and address are destroyed on this PC
+                    and in the cloud. <strong>This cannot be undone.</strong>
+                  </p>
+                  <p className="text-ink-3 text-sm">
+                    Their {customer.saleCount === 1 ? 'sale' : 'sales'} stay, without their name on
+                    them — the shop is required to keep its accounts, and the day&apos;s totals must
+                    not move. Any tax invoice already issued keeps the details it was printed with,
+                    because the buyer filed it.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void erase(customer)}
+                      className="border-danger text-danger min-h-touch rounded border-2 px-4 font-semibold"
+                    >
+                      Erase permanently
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setErasing(null)}
+                      className="border-hair text-ink-2 min-h-touch rounded border px-4"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {history?.id === customer.id && (
                 <table className="w-full text-sm">
@@ -390,6 +500,13 @@ function CustomerForm({
       </div>
     </section>
   );
+}
+
+/** Date only. An erasure is a day somebody has to be able to quote, not a minute. */
+function shortDate(iso: string): string {
+  const at = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
 }
 
 /** The shop PC's own clock, to the minute. Nobody reads seconds off a purchase history. */

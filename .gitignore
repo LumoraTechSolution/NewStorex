@@ -52,3 +52,14 @@ test-results/
 # branch and living in history forever. Ignored so that cannot happen by accident;
 # real secrets belong in a password manager, not the working tree.
 details.md
+PLATFORM-ADMIN-PASSWORD.txt
+
+# Staged third-party runtime for the desktop build (M5-01). ~135 MB of a trimmed JRE and
+# Postgres' Windows binaries, rebuilt by `pnpm stage:runtime` — somebody else's build output,
+# which does not belong in this project's history.
+runtime/
+
+# Machine-local Claude Code permission grants. `settings.json` beside it holds the
+# shared skill overrides and is versioned; this one is whatever this machine has
+# been asked to allow, and is nobody else's business.
+.claude/settings.local.json

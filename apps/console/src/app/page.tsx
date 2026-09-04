@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { AppShell } from '@/components/AppShell';
 import { AttentionScreen } from '@/components/AttentionScreen';
+import { StockScreen } from '@/components/StockScreen';
 import { ErrorNote, Screen } from '@/components/Chrome';
 import { LoginScreen } from '@/components/LoginScreen';
 import { TodayScreen } from '@/components/TodayScreen';
@@ -17,6 +18,8 @@ import {
   type BranchTotal,
   type CashVariance,
   type DailyTotal,
+  type OperatorDay,
+  type PulseSlot,
   type RecentSale,
   type Today,
 } from '@/lib/api';
@@ -40,11 +43,13 @@ import {
  *
  * <h2>The read-only rule is in the wire, not just the UI</h2>
  *
- * There is no form here because the server would refuse one anyway: a console session is rejected
- * on every write path. That is deliberate belt and braces — a read-only UI is a promise, and a
- * credential that cannot write is a fact.
+ * There is one form here and there was none until M6-10: a console session is rejected on every
+ * write path except acknowledging a cash variance. That is deliberate belt and braces — a
+ * read-only UI is a promise, and a credential that cannot write is a fact — and the exception is
+ * narrow enough to state in a sentence. It touches no money and no ledger, it is attributed to
+ * whoever pressed it, and the shift stays listed as reviewed afterwards.
  */
-type Tab = 'TODAY' | 'TREND' | 'ATTENTION';
+type Tab = 'TODAY' | 'TREND' | 'STOCK' | 'ATTENTION';
 
 interface Data {
   today: Today;
@@ -52,6 +57,8 @@ interface Data {
   branches: BranchTotal[];
   attention: CashVariance[];
   recent: RecentSale[];
+  operators: OperatorDay[];
+  pulse: PulseSlot[];
 }
 
 export default function Page() {
@@ -82,14 +89,20 @@ export default function Page() {
     setLoading(true);
     setError(null);
     try {
-      const [today, trend, branches, attention, recent] = await Promise.all([
+      const [today, trend, branches, attention, recent, operators, pulse] = await Promise.all([
         get<Today>('/api/console/today', currentToken),
         get<DailyTotal[]>('/api/console/trend?days=14', currentToken),
         get<BranchTotal[]>('/api/console/branches', currentToken),
         get<CashVariance[]>('/api/console/attention?days=14', currentToken),
         get<RecentSale[]>('/api/console/recent-sales?limit=20', currentToken),
+        get<OperatorDay[]>('/api/console/operators', currentToken),
+        // Ninety-six slots of two small numbers — a couple of kilobytes, and it joins the opening
+        // fan-out rather than loading after it. The graphic appearing a second late under a figure
+        // that is already there is the reload artefact this screen most has to avoid: the shape of
+        // the day arriving separately reads as the shape of the day changing.
+        get<PulseSlot[]>('/api/console/pulse', currentToken),
       ]);
-      setData({ today, trend, branches, attention, recent });
+      setData({ today, trend, branches, attention, recent, operators, pulse });
     } catch (e) {
       if (e instanceof SessionExpiredError) {
         // The session was revoked or expired server-side. Drop everything rather than leaving
@@ -121,6 +134,7 @@ export default function Page() {
       items={[
         { value: 'TODAY', label: 'Today' },
         { value: 'TREND', label: 'Trend' },
+        { value: 'STOCK', label: 'Stock' },
         { value: 'ATTENTION', label: 'Attention', badge: data?.attention.length },
       ]}
       active={tab}
@@ -134,10 +148,27 @@ export default function Page() {
         )}
 
         {data && tab === 'TODAY' && (
-          <TodayScreen today={data.today} branches={data.branches} recent={data.recent} />
+          <TodayScreen
+            today={data.today}
+            branches={data.branches}
+            recent={data.recent}
+            operators={data.operators}
+            pulse={data.pulse}
+          />
         )}
         {data && tab === 'TREND' && <TrendScreen trend={data.trend} />}
-        {data && tab === 'ATTENTION' && <AttentionScreen variances={data.attention} />}
+        {/* Loads its own data rather than joining the page's opening fan-out: stock is two queries
+            that scan a shop's whole catalogue, and paying for them on every sign-in to look at
+            today's takings would slow the screen everybody opens for the sake of the one they
+            sometimes do. */}
+        {tab === 'STOCK' && <StockScreen token={token} />}
+        {data && tab === 'ATTENTION' && (
+          <AttentionScreen
+            variances={data.attention}
+            token={token}
+            onChanged={() => void load(token)}
+          />
+        )}
 
         {data && (
           <button

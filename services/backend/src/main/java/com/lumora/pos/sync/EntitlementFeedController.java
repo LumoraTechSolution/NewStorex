@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -46,9 +47,25 @@ import org.springframework.web.bind.annotation.RestController;
 public class EntitlementFeedController {
 
     private final LicenceService licences;
+    private final JdbcTemplate jdbc;
 
-    public EntitlementFeedController(LicenceService licences) {
+    public EntitlementFeedController(LicenceService licences, JdbcTemplate jdbc) {
         this.licences = licences;
+        this.jdbc = jdbc;
+    }
+
+    /**
+     * The shop's name, as the cloud has it, for the token that just authenticated.
+     *
+     * <p>Read straight from {@code tenants} rather than carried on the principal: the principal
+     * holds an id because that is all every other endpoint needs, and widening it to carry a name
+     * would put a string on the hot path of every ingest to serve one endpoint that runs every
+     * five minutes.
+     */
+    private String tenantName(long tenantId) {
+        List<String> found =
+                jdbc.queryForList("SELECT name FROM tenants WHERE id = ?", String.class, tenantId);
+        return found.isEmpty() ? null : found.get(0);
     }
 
     /**
@@ -65,11 +82,16 @@ public class EntitlementFeedController {
         long tenantId =
                 CloudPrincipals.require(request, AuthenticatedPrincipal.Kind.TILL).tenantId();
 
+        // Named on every path, including the unlicensed one below. A shop whose licence the cloud
+        // cannot find is exactly the shop whose operator wants to know which shop the cloud thinks
+        // it is talking to.
+        String tenantName = tenantName(tenantId);
+
         Optional<LicenceService.LicencedPlan> plan = licences.currentOrLast(tenantId);
         if (plan.isEmpty()) {
             // No licence row at all. Rare — provisioning always grants a trial — and deliberately
             // not the same shape as a lapse: there is no plan to name and no date to renew from.
-            return Entitlement.unlicensed();
+            return Entitlement.unlicensed().withTenantName(tenantName);
         }
 
         LicenceService.LicencedPlan p = plan.get();
@@ -87,6 +109,7 @@ public class EntitlementFeedController {
                 p.maxTerminals(),
                 p.maxUsers(),
                 flags,
-                Instant.now());
+                Instant.now(),
+                tenantName);
     }
 }

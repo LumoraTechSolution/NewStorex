@@ -43,7 +43,7 @@ public class EntitlementController {
         // into "allow everything and say nothing", and a placeholder that claimed a plan would put
         // a plan name on a screen that nobody has sold.
         if (cached.isEmpty()) {
-            return new View(false, true, null, null, null, null, null, null, List.of());
+            return new View(false, true, null, null, null, null, null, null, List.of(), null);
         }
 
         EntitlementStore.Cached c = cached.get();
@@ -56,7 +56,8 @@ public class EntitlementController {
                 c.checkedAt(),
                 c.licensedAt(),
                 c.maxTerminals(),
-                List.copyOf(c.flags()));
+                List.copyOf(c.flags()),
+                c.tenantName());
     }
 
     /**
@@ -77,5 +78,11 @@ public class EntitlementController {
             Instant checkedAt,
             Instant licensedAt,
             Integer maxTerminals,
-            List<String> flags) {}
+            List<String> flags,
+            /**
+             * The shop name the cloud used for this till's token, or null before a first sync.
+             * The terminal shows it beside the shop's own name — see V122 for the misfiled sale
+             * that made the absence of this field a real cost.
+             */
+            String tenantName) {}
 }

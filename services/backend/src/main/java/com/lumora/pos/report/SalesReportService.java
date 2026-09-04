@@ -255,9 +255,50 @@ public class SalesReportService {
      * <p>Open shifts are excluded, and not as a tidiness measure: an open shift has an expected-cash
      * figure, and putting it on a list anybody can open would give the person about to count the
      * drawer the number M2-02 exists to keep from them.
+     *
+     * <h2>Two ways to ask for less than everything, and neither is a page number (M6-11)</h2>
+     *
+     * Shifts accumulate for as long as a shop trades, and until now this returned the newest thirty
+     * with no way to reach the thirty-first. The fix is deliberately <b>not</b> pagination: a
+     * shopkeeper does not think in pages, they think "show me last week" and "show me more". So
+     * there is a date range, and there is a cursor.
+     *
+     * <h2>The cursor is keyset, and that is not a micro-optimisation</h2>
+     *
+     * {@code OFFSET 30} on a list that grows at the top is wrong, not slow. A shift closing between
+     * two requests pushes every row down one, so the second page starts one row too early and
+     * repeats a shift the reader has already seen. Nothing is lost, and that is exactly why it is
+     * dangerous: a duplicate in a list somebody is reconciling against a drawer reads as two events
+     * rather than one, and the arithmetic that follows is wrong with no visible cause. (Deletion
+     * would produce the opposite failure — a skipped row — but shifts are never deleted here.)
+     *
+     * <p>Comparing on {@code (closed_at, id)} asks for what is genuinely after the last row somebody
+     * saw, and cannot repeat or skip regardless of what closed in between. The id is in the tuple
+     * because two tills can close within the same microsecond.
+     *
+     * @param from inclusive, in the shop's own zone; null for no lower bound
+     * @param to inclusive, in the shop's own zone; null for no upper bound
+     * @param beforeClosedAt with {@code beforeId}, the last row the caller already has. Both or
+     *     neither — half a cursor is a query that silently means something else.
      */
     @Transactional(readOnly = true)
-    public List<ClosedShift> closedShifts(long tenantId, int limit) {
+    public List<ClosedShift> closedShifts(
+            long tenantId,
+            LocalDate from,
+            LocalDate to,
+            Instant beforeClosedAt,
+            Long beforeId,
+            int limit) {
+        // Null-safe on purpose: a half-open range is the ordinary case here, because "everything
+        // before last Friday" and "everything since the first" are both things a shopkeeper asks.
+        OffsetDateTime lower = from == null ? null : Window.between(from, from).from();
+        OffsetDateTime upper = to == null ? null : Window.between(to, to).to();
+        // Both halves of the cursor or neither. A beforeId with no timestamp would compare against
+        // NULL and return nothing, which looks exactly like "no more shifts".
+        OffsetDateTime cursorAt =
+                beforeClosedAt == null || beforeId == null
+                        ? null
+                        : beforeClosedAt.atOffset(ZoneOffset.UTC);
         return jdbc.query(
                 """
                 SELECT s.id, b.code AS branch_code, s.terminal_code,
@@ -277,7 +318,11 @@ public class SalesReportService {
                   JOIN users opener ON opener.id = s.opened_by
                   LEFT JOIN users closer ON closer.id = s.closed_by
                  WHERE s.tenant_id = ? AND s.status = 'CLOSED'
-                 ORDER BY s.closed_at DESC
+                   AND (?::timestamptz IS NULL OR s.closed_at >= ?::timestamptz)
+                   AND (?::timestamptz IS NULL OR s.closed_at <  ?::timestamptz)
+                   AND (?::timestamptz IS NULL
+                        OR (s.closed_at, s.id) < (?::timestamptz, ?::bigint))
+                 ORDER BY s.closed_at DESC, s.id DESC
                  LIMIT ?
                 """,
                 (rs, row) ->
@@ -300,6 +345,13 @@ public class SalesReportService {
                                 rs.getInt("refund_count"),
                                 rs.getLong("refunds_total_minor")),
                 tenantId,
+                lower,
+                lower,
+                upper,
+                upper,
+                cursorAt,
+                cursorAt,
+                beforeId,
                 limit);
     }
 

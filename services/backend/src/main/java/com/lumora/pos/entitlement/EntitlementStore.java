@@ -73,7 +73,7 @@ public class EntitlementStore {
                 jdbc.query(
                         """
                         SELECT licensed, plan_code, plan_name, licence_starts_at, licence_expires_at,
-                               max_terminals, max_users, checked_at, licensed_at
+                               max_terminals, max_users, tenant_name, checked_at, licensed_at
                           FROM entitlements WHERE tenant_id = ?
                         """,
                         (rs, row) ->
@@ -85,6 +85,7 @@ public class EntitlementStore {
                                         instant(rs.getTimestamp("licence_expires_at")),
                                         (Integer) rs.getObject("max_terminals"),
                                         (Integer) rs.getObject("max_users"),
+                                        rs.getString("tenant_name"),
                                         instant(rs.getTimestamp("checked_at")),
                                         instant(rs.getTimestamp("licensed_at")),
                                         Set.of()),
@@ -113,8 +114,9 @@ public class EntitlementStore {
                 """
                 INSERT INTO entitlements
                     (tenant_id, licensed, plan_code, plan_name, licence_starts_at,
-                     licence_expires_at, max_terminals, max_users, checked_at, licensed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), CASE WHEN ? THEN now() ELSE NULL END)
+                     licence_expires_at, max_terminals, max_users, tenant_name,
+                     checked_at, licensed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now(), CASE WHEN ? THEN now() ELSE NULL END)
                 ON CONFLICT (tenant_id) DO UPDATE SET
                     licensed = excluded.licensed,
                     plan_code = excluded.plan_code,
@@ -123,6 +125,9 @@ public class EntitlementStore {
                     licence_expires_at = excluded.licence_expires_at,
                     max_terminals = excluded.max_terminals,
                     max_users = excluded.max_users,
+                    -- coalesce, so an older cloud that does not send a name does not erase one a
+                    -- newer one already supplied. A name is only ever replaced by another name.
+                    tenant_name = coalesce(excluded.tenant_name, entitlements.tenant_name),
                     checked_at = now(),
                     licensed_at = coalesce(excluded.licensed_at, entitlements.licensed_at)
                 """,
@@ -134,6 +139,7 @@ public class EntitlementStore {
                 timestamp(entitlement.licenceExpiresAt()),
                 entitlement.maxTerminals(),
                 entitlement.maxUsers(),
+                entitlement.tenantName(),
                 entitlement.licensed());
 
         if (!entitlement.licensed()) {
@@ -182,6 +188,12 @@ public class EntitlementStore {
             Instant licenceExpiresAt,
             Integer maxTerminals,
             Integer maxUsers,
+            /**
+             * The shop name the cloud returned for this till's token, or null before the first
+             * sync. Shown beside the till's own name so a credential pointing at the wrong shop is
+             * visible — never enforced. See V122 for the incident that added it.
+             */
+            String tenantName,
             Instant checkedAt,
             Instant licensedAt,
             Set<String> flags) {
@@ -195,6 +207,7 @@ public class EntitlementStore {
                     licenceExpiresAt,
                     maxTerminals,
                     maxUsers,
+                    tenantName,
                     checkedAt,
                     licensedAt,
                     replacement);

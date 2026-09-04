@@ -17,7 +17,12 @@ const config: Config = {
           DEFAULT: 'var(--lum-accent)',
           ink: 'var(--lum-accent-ink)',
         },
-        ok: 'var(--lum-ok)',
+        // ok-ink exists for the same reason accent-ink does: the readable text colour on
+        // filled green inverts between the themes, so nothing may hardcode one.
+        ok: {
+          DEFAULT: 'var(--lum-ok)',
+          ink: 'var(--lum-ok-ink)',
+        },
         danger: 'var(--lum-danger)',
         pending: 'var(--lum-pending)',
         page: 'var(--lum-page)',

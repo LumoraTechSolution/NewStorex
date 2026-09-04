@@ -19,6 +19,9 @@ export default tseslint.config(
       '**/.turbo/**',
       '**/coverage/**',
       'services/backend/**',
+      // Staged third-party and generated output (M5-01): a trimmed JRE, Postgres' binaries,
+      // and Next's standalone bundle. Not ours to lint, and rebuilt by `pnpm stage:runtime`.
+      'runtime/**',
     ],
   },
 

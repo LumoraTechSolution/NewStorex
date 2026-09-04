@@ -41,6 +41,7 @@ interface ProductRow {
   taxMode: 'INCLUSIVE' | 'EXCLUSIVE';
   taxRateBp: number;
   categoryId: number | null;
+  reorderPoint: number | null;
   categoryName: string | null;
   barcodes: string[];
   active: boolean;
@@ -61,6 +62,8 @@ interface Draft {
   taxMode: 'INCLUSIVE' | 'EXCLUSIVE';
   taxRate: string;
   categoryId: number | null;
+  /** Free text, because "" and "0" are different answers — see the field's hint. */
+  reorderPoint: string;
   barcodes: string[];
 }
 
@@ -73,6 +76,10 @@ const BLANK: Draft = {
   taxMode: 'INCLUSIVE',
   taxRate: '18',
   categoryId: null,
+  // Blank, so a new product is unwatched until somebody decides a threshold for it. Defaulting to
+  // a number here would fill the low-stock report with alerts nobody asked for, which is how that
+  // screen stops being read.
+  reorderPoint: '',
   barcodes: [''],
 };
 
@@ -84,6 +91,7 @@ function toDraft(product: ProductRow): Draft {
     taxMode: product.taxMode,
     taxRate: formatMinor(product.taxRateBp),
     categoryId: product.categoryId,
+    reorderPoint: product.reorderPoint === null ? '' : String(product.reorderPoint),
     barcodes: product.barcodes.length > 0 ? product.barcodes : [''],
   };
 }
@@ -170,6 +178,20 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
         return;
       }
 
+      // Blank means "do not watch this product"; "0" means "tell me when it is empty". Two
+      // different instructions, so the empty string must not become a number here.
+      const trimmedReorder = draft.reorderPoint.trim();
+      let reorderPoint: number | null = null;
+      if (trimmedReorder !== '') {
+        reorderPoint = Number(trimmedReorder);
+        if (!Number.isInteger(reorderPoint) || reorderPoint < 0) {
+          setError(
+            'That reorder point could not be read. Type a whole number of units, or leave it blank not to watch this product.',
+          );
+          return;
+        }
+      }
+
       const body = JSON.stringify({
         clientUuid: product ? product.clientUuid : crypto.randomUUID(),
         sku: draft.sku,
@@ -178,6 +200,7 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
         taxMode: draft.taxMode,
         taxRateBp,
         categoryId: draft.categoryId,
+        reorderPoint,
         barcodes: draft.barcodes.map((barcode) => barcode.trim()).filter(Boolean),
       });
 
@@ -512,7 +535,23 @@ function ProductForm({
               ))}
           </select>
         </Labelled>
+        <Labelled label="Reorder at" hint="blank = not watched">
+          <input
+            value={draft.reorderPoint}
+            onChange={(event) => set('reorderPoint', event.target.value)}
+            inputMode="numeric"
+            placeholder="—"
+            aria-describedby="reorder-point-hint"
+            className={`${NUMERIC_FIELD_CLASS} w-24 text-right`}
+          />
+        </Labelled>
       </div>
+
+      <p id="reorder-point-hint" className="text-ink-3 text-sm">
+        Units. When the shelf falls to this number, the product appears on the low stock report.
+        Leave it blank and this product is never reported, however low it goes. Zero means tell me
+        when it runs out.
+      </p>
 
       <fieldset className="flex flex-col gap-2">
         <legend className="text-ink-3 text-xs uppercase tracking-wider">Price includes VAT</legend>

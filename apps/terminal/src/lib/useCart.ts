@@ -70,6 +70,19 @@ export function useCart() {
    * times should read "4" on one row, not fill the screen with four rows the cashier then
    * has to check. The merged line moves to selection so the qty keys act on it.
    */
+  /*
+   * A note on the `setSelected` calls inside the `setLines` updaters below.
+   *
+   * They are side effects in a function React requires to be pure, and StrictMode invokes
+   * these twice on purpose to expose exactly that. They survive only because each passes a
+   * *computed constant* — `at`, `current.length`, `Math.min(index, …)` — so running twice
+   * sets the same value twice and is indistinguishable from running once.
+   *
+   * `move` did not have that property: it passed an updater function, so the second
+   * invocation moved the selection a second time and the arrow keys skipped every other
+   * line. If you add a `setSelected` here, keep it a constant, or lift it out the way
+   * `move` now does.
+   */
   const addProduct = useCallback((product: Product, qty = 1) => {
     setLines((current) => {
       const at = current.findIndex((l) => l.product.clientUuid === product.clientUuid);
@@ -126,18 +139,29 @@ export function useCart() {
     setSelected(-1);
   }, []);
 
-  const move = useCallback((delta: number) => {
-    setLines((current) => {
-      setSelected((s) => {
-        if (current.length === 0) return -1;
-        const next = s + delta;
-        // Clamped, not wrapped: a cashier holding Down should stop at the last line, not
-        // silently land back on the first and edit the wrong one.
-        return Math.max(0, Math.min(current.length - 1, next));
-      });
-      return current;
-    });
-  }, []);
+  /**
+   * Moves the selection one line, clamped at both ends.
+   *
+   * Reads `lines` from the closure rather than nesting `setSelected` inside a `setLines`
+   * updater, and that is not a style preference. React invokes updater functions **twice**
+   * under StrictMode, which `next.config.mjs` enables — so a `setSelected` called from
+   * inside one ran twice per keypress and the selection skipped every other line. An
+   * updater has to be pure; the nesting made it a side effect, and the double invocation
+   * that is supposed to *expose* impurity silently doubled the movement instead.
+   *
+   * Clamped, not wrapped: a cashier holding Down should stop at the last line, not silently
+   * land back on the first and edit the wrong one.
+   */
+  const move = useCallback(
+    (delta: number) => {
+      if (lines.length === 0) {
+        setSelected(-1);
+        return;
+      }
+      setSelected((s) => Math.max(0, Math.min(lines.length - 1, s + delta)));
+    },
+    [lines.length],
+  );
 
   const cart: Cart = { lines, totals, selected };
   return { cart, addProduct, changeQty, setQty, voidLine, clear, move, setSelected };

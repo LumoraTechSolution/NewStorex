@@ -49,21 +49,64 @@ export function CardGrid({ children }: { children: React.ReactNode }) {
 
 export function Card({
   title,
+  aside,
   children,
   footer,
 }: {
   title?: string;
+  /**
+   * A quieter fact belonging to the title — the sync time, the range a list covers.
+   *
+   * <p>It sits on the title's line rather than under the figure because it qualifies the whole
+   * card. The sync time in particular is the only thing on the Today screen that tells an owner
+   * whether to believe the number beneath it, and buried under that number is where it stops
+   * being read.
+   */
+  aside?: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
 }) {
   return (
-    <section className="bg-surface border-hair flex flex-col gap-3 rounded-lg border p-4 md:p-5">
-      {title && (
-        <h2 className="text-ink-3 text-xs font-medium uppercase tracking-wider">{title}</h2>
+    <section className="bg-surface border-hair flex flex-col gap-3 rounded-xl border p-4 shadow-[0_1px_2px_rgba(20,27,24,0.05),0_8px_24px_-16px_rgba(20,27,24,0.25)] md:p-5">
+      {(title || aside) && (
+        <div className="flex items-baseline justify-between gap-3">
+          {title && (
+            <h2 className="text-ink-3 text-[11px] font-semibold uppercase tracking-[0.09em]">
+              {title}
+            </h2>
+          )}
+          {aside && <span className="text-ink-3 text-[11px] tracking-wide">{aside}</span>}
+        </div>
       )}
       {children}
-      {footer && <div className="text-ink-3 text-xs">{footer}</div>}
+      {footer && <div className="text-ink-3 text-xs leading-relaxed">{footer}</div>}
     </section>
+  );
+}
+
+/**
+ * A word beside a number — "Short", "Low", "Not received".
+ *
+ * <p>§A in one component: status colour never carries meaning on its own, so the chip is always a
+ * label and the colour only ever agrees with it. Outlined rather than filled because a filled chip
+ * at these sizes needs an ink token per colour to stay legible in both themes, and four of them
+ * would be four more chances to fail contrast silently.
+ */
+export function Chip({
+  tone,
+  children,
+}: {
+  tone: 'danger' | 'pending';
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      className={`rounded-full border border-current px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
+        tone === 'danger' ? 'text-danger' : 'text-pending'
+      }`}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -91,9 +134,18 @@ export function Row({ children }: { children: React.ReactNode }) {
  *
  * <p>Scales with the viewport because a 36px figure that anchors a phone screen is lost in the
  * middle of a desktop one — the type has to grow with the canvas or the hierarchy inverts.
+ *
+ * <p>Set in the display serif (M6-14). A serif on a dashboard is a deliberate risk: this figure is
+ * what somebody opened the app for, and it should read as something written in a ledger rather than
+ * emitted by a reporting tool. Tabular figures regardless, because a number that jitters as it
+ * updates is a number people stop trusting.
  */
 export function Headline({ children }: { children: React.ReactNode }) {
-  return <p className="text-3xl font-semibold md:text-4xl lg:text-5xl">{children}</p>;
+  return (
+    <p className="font-display text-4xl font-semibold tabular-nums leading-none tracking-tight md:text-5xl lg:text-6xl">
+      {children}
+    </p>
+  );
 }
 
 export function Empty({ children }: { children: React.ReactNode }) {

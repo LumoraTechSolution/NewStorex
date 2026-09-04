@@ -66,7 +66,9 @@ public class ProductAdminService {
             String taxMode,
             int taxRateBp,
             Long categoryId,
-            List<String> barcodes) {}
+            List<String> barcodes,
+            /** Null means nobody is watching this product. Zero is a real threshold — see V120. */
+            Integer reorderPoint) {}
 
     // ------------------------------------------------------------------------- products
 
@@ -112,6 +114,7 @@ public class ProductAdminService {
         requirePrice(draft.priceMinor());
         String taxMode = requireTaxMode(draft.taxMode());
         requireTaxRate(draft.taxRateBp());
+        Integer reorderPoint = requireReorderPoint(draft.reorderPoint());
         List<String> barcodes = cleanBarcodes(draft.barcodes());
         requireCategoryBelongsHere(tenantId, draft.categoryId());
         refuseDuplicateSku(tenantId, sku, null);
@@ -121,8 +124,8 @@ public class ProductAdminService {
                         """
                         INSERT INTO products
                             (client_uuid, tenant_id, sku, name, price_minor, tax_mode, tax_rate_bp,
-                             category_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                             category_id, reorder_point)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT (client_uuid) DO UPDATE SET client_uuid = excluded.client_uuid
                         RETURNING id
                         """,
@@ -134,7 +137,8 @@ public class ProductAdminService {
                         draft.priceMinor(),
                         taxMode,
                         draft.taxRateBp(),
-                        draft.categoryId());
+                        draft.categoryId(),
+                        reorderPoint);
 
         setBarcodes(tenantId, id, barcodes);
         ProductRow created = byId(tenantId, id);
@@ -157,6 +161,7 @@ public class ProductAdminService {
         requirePrice(draft.priceMinor());
         String taxMode = requireTaxMode(draft.taxMode());
         requireTaxRate(draft.taxRateBp());
+        Integer reorderPoint = requireReorderPoint(draft.reorderPoint());
         List<String> barcodes = cleanBarcodes(draft.barcodes());
         requireCategoryBelongsHere(tenantId, draft.categoryId());
 
@@ -167,7 +172,7 @@ public class ProductAdminService {
                 """
                 UPDATE products
                    SET sku = ?, name = ?, price_minor = ?, tax_mode = ?, tax_rate_bp = ?,
-                       category_id = ?
+                       category_id = ?, reorder_point = ?
                  WHERE tenant_id = ? AND id = ?
                 """,
                 sku,
@@ -176,6 +181,7 @@ public class ProductAdminService {
                 taxMode,
                 draft.taxRateBp(),
                 draft.categoryId(),
+                reorderPoint,
                 tenantId,
                 productId);
 
@@ -443,6 +449,29 @@ public class ProductAdminService {
         }
     }
 
+    /**
+     * Checks a reorder threshold, and deliberately lets null through.
+     *
+     * <p>Null is "nobody is watching this product" and is the default for the whole catalogue
+     * (V120). Zero is a different and equally valid answer — a shopkeeper asking to hear about a
+     * line the moment it is empty — so this must not fold one into the other. Only a negative is
+     * rejected: there is no shelf you would want to be told about before it reaches below empty.
+     */
+    private static Integer requireReorderPoint(Integer reorderPoint) {
+        if (reorderPoint != null && reorderPoint < 0) {
+            throw new RejectedException(
+                    "A reorder point cannot be negative. Leave it blank not to watch this product,"
+                            + " or set 0 to be told when it runs out.");
+        }
+        return reorderPoint;
+    }
+
+    /** Null-preserving, because 0 and "not watched" are different facts — see {@link #requireReorderPoint}. */
+    private static Integer reorderPoint(java.sql.ResultSet rs) throws java.sql.SQLException {
+        int value = rs.getInt("reorder_point");
+        return rs.wasNull() ? null : value;
+    }
+
     private static String requireTaxMode(String taxMode) {
         String upper = taxMode == null ? "" : taxMode.trim().toUpperCase(Locale.ROOT);
         if (!upper.equals("INCLUSIVE") && !upper.equals("EXCLUSIVE")) {
@@ -510,7 +539,7 @@ public class ProductAdminService {
     private static final String SELECT_ROW =
             """
             SELECT p.id, p.client_uuid, p.sku, p.name, p.price_minor, p.tax_mode, p.tax_rate_bp,
-                   p.active, p.category_id, c.name AS category_name,
+                   p.active, p.category_id, p.reorder_point, c.name AS category_name,
                    COALESCE(
                        array_agg(b.barcode ORDER BY b.is_primary DESC, b.barcode)
                            FILTER (WHERE b.barcode IS NOT NULL),
@@ -540,6 +569,7 @@ public class ProductAdminService {
                         category,
                         rs.getString("category_name"),
                         barcodes,
+                        reorderPoint(rs),
                         rs.getBoolean("active"));
             };
 
@@ -574,6 +604,8 @@ public class ProductAdminService {
         // groups by the string, and a join table for a label nobody edits from there is a second
         // thing to keep in step for no reader's benefit.
         payload.put("category", product.categoryName());
+        // Null travels as null and is stored as null (V211). It is not the same as 0.
+        payload.put("reorderPoint", product.reorderPoint());
         payload.put("active", product.active());
         payload.put("barcodes", List.copyOf(product.barcodes()));
         outbox.enqueue(tenantId, "product", product.clientUuid(), payload);

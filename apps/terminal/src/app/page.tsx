@@ -4,16 +4,22 @@ import { formatMinor } from '@lumora/domain';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
+import { ActionRail } from '@/components/ActionRail';
 import { CartLines } from '@/components/CartLines';
 import { FunctionBar, type FunctionKey } from '@/components/FunctionBar';
+import { HelpOverlay } from '@/components/HelpOverlay';
 import { CustomerOverlay, type Customer } from '@/components/CustomerOverlay';
 import { RefundOverlay, type RefundOutcome } from '@/components/RefundOverlay';
 import { ScanField } from '@/components/ScanField';
+import { SearchOverlay } from '@/components/SearchOverlay';
+import { SetupWizard } from '@/components/SetupWizard';
 import { ShiftOverlay, type ClosedShift } from '@/components/ShiftOverlay';
 import { TaxInvoiceOverlay, type IssuedTaxInvoice } from '@/components/TaxInvoiceOverlay';
 import { SyncStatusStrip } from '@/components/SyncStatusStrip';
 import { LicenceNotice } from '@/components/LicenceNotice';
+import { UpdateNotice } from '@/components/UpdateNotice';
 import { TenderOverlay, type TenderOutcome } from '@/components/TenderOverlay';
+import { TillIdentity } from '@/components/TillIdentity';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { TotalsPanel } from '@/components/TotalsPanel';
 import { buildReceiptWithDrawerKick, type ReceiptData } from '@/lib/receipt';
@@ -22,6 +28,7 @@ import { useEntitlement } from '@/lib/useEntitlement';
 import { useGlobalKeys } from '@/lib/scanner';
 import { useCart, type Cart, type Product } from '@/lib/useCart';
 import { useShift } from '@/lib/useShift';
+import { useShopIdentity, type ShopIdentity } from '@/lib/useShopIdentity';
 import {
   buildCreditNoteWithDrawerKick,
   buildZReport,
@@ -37,27 +44,32 @@ type Committed = {
   alreadyExisted: boolean;
 };
 
-// Placeholder until M5-03's first-run wizard provisions real branch/terminal identity.
-const STORE_NAME = 'StoreX';
+/**
+ * The one line of the receipt header that is not the shop's own (M5-03).
+ *
+ * Everything else here now comes from the database, provisioned by the first-run wizard. This
+ * stays a constant because it is this product's mark, not the shop's — a shopkeeper does not get
+ * to edit it, and a column for it would invite exactly that.
+ */
 const TAGLINE = 'Powered by Lumora Tech';
-const STORE_ADDRESS = '123 Peradeniya Road, Kandy';
-const BRANCH_CODE = 'KND';
-const TERMINAL_CODE = 'T1';
 
 function receiptDataFor(
+  shop: ShopIdentity,
   cart: Cart,
   outcome: TenderOutcome,
   committed: Committed,
   customerName: string | null,
 ): ReceiptData {
   return {
-    storeName: STORE_NAME,
+    storeName: shop.shopName,
     tagline: TAGLINE,
-    storeAddress: STORE_ADDRESS,
+    // An unset address prints as a blank line rather than collapsing the header, for the reason
+    // `receipt.ts` gives about the customer line: a fixed layout is one a cashier can scan.
+    storeAddress: shop.shopAddress ?? '',
     customerName,
-    branchName: BRANCH_CODE,
-    branchCode: BRANCH_CODE,
-    terminalCode: TERMINAL_CODE,
+    branchName: shop.branchName,
+    branchCode: shop.branchCode,
+    terminalCode: shop.terminalCode,
     invoiceNumber: committed.invoiceNumber,
     soldAt: committed.soldAt,
     lines: cart.totals.lines.map((line, index) => ({
@@ -118,6 +130,60 @@ function withPrintOutcome(
 }
 
 /**
+ * The gate in front of the till (M5-03).
+ *
+ * A freshly installed till has a migrated schema and no shop, so the first thing this process
+ * has to answer is not "what is in the cart" but "whose till is this". Three outcomes, and each
+ * one is a whole screen rather than a banner:
+ *
+ *  - not set up   → the wizard, which is the only thing that can be done here
+ *  - set up       → the till, handed its identity so nothing downstream has to ask again
+ *  - unreachable  → an error, deliberately *not* the wizard. Offering setup to a shop that
+ *                   already exists is how a till acquires a second identity, and the server
+ *                   would refuse it at the last step, after the shopkeeper had typed everything.
+ *
+ * The till is a separate component below rather than a branch inside one, so that `Till` can
+ * take `shop` as a plain prop and every receipt path reads it from there. The alternative —
+ * nullable identity threaded through the existing component — puts a `?? 'StoreX'` at each of
+ * thirteen call sites, and one of them eventually prints on a real receipt.
+ */
+export default function Page() {
+  const { state, reload } = useShopIdentity();
+
+  if (state.status === 'loading') {
+    return (
+      <main className="bg-page text-ink-2 flex min-h-screen items-center justify-center">
+        <p className="text-lg">Starting…</p>
+      </main>
+    );
+  }
+
+  if (state.status === 'needs-setup') {
+    return <SetupWizard onComplete={reload} />;
+  }
+
+  if (state.status === 'error') {
+    return (
+      <main className="bg-page text-ink flex min-h-screen items-center justify-center p-8">
+        <div className="max-w-md text-center">
+          <h1 className="text-xl font-semibold">This till cannot reach its own database</h1>
+          <p className="text-ink-2 mt-3">{state.message}</p>
+          <button
+            type="button"
+            onClick={() => void reload()}
+            className="border-hair text-ink min-h-touch mt-6 rounded-lg border px-6 text-lg"
+          >
+            Try again
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  return <Till shop={state.identity} />;
+}
+
+/**
  * The terminal (M1-07 to M1-10).
  *
  * A fixed appliance, not a web page. The shell never scrolls and has no navigation: the
@@ -130,10 +196,47 @@ function withPrintOutcome(
  * what the M0 spike did. The overlay is a second modal alongside the item picker, and the
  * two never overlap — `interactionsBlocked` is what the scan field, the global F-keys and
  * the picker's own arrow handling all gate on.
+ *
+ * Since M5-03 it is handed the shop it belongs to rather than reading five constants: the
+ * branch and terminal codes here are what every invoice number this till issues is built from.
  */
-export default function Page() {
+function Till({ shop }: { shop: ShopIdentity }) {
   const router = useRouter();
-  const { cart, addProduct, changeQty, voidLine, clear: clearCart, move } = useCart();
+  const {
+    cart,
+    addProduct: addProductToCart,
+    changeQty,
+    voidLine,
+    clear: clearCart,
+    move,
+    setSelected,
+  } = useCart();
+  /**
+   * The touch keypad's pending quantity (M6), as the digit string the taps built.
+   *
+   * Empty means one. Kept as a string rather than a number so '0' and '00' behave the way
+   * they do on a till keypad — leading zeros are simply absent — and so clearing is one
+   * assignment rather than a sentinel.
+   */
+  const [qtyBuffer, setQtyBuffer] = useState('');
+  const multiplier = Math.max(1, Number(qtyBuffer) || 1);
+
+  /**
+   * Adds a product, consuming the pending quantity.
+   *
+   * **Everything that adds goes through here** — the scan field, the search overlay, the
+   * item picker — and it always clears the multiplier afterwards. That is deliberate and it
+   * is the single most likely bug in the touch layer: a multiplier that survives its own
+   * use means the cashier taps 3, adds one thing, and the *next* item silently rings up
+   * three times. The reset lives with the read so the two can never drift apart.
+   */
+  const addProduct = useCallback(
+    (product: Product) => {
+      addProductToCart(product, multiplier);
+      setQtyBuffer('');
+    },
+    [addProductToCart, multiplier],
+  );
   const [message, setMessage] = useState<{ tone: 'ok' | 'danger'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [picker, setPicker] = useState<Product[] | null>(null);
@@ -150,10 +253,14 @@ export default function Page() {
    */
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [issuingTaxInvoice, setIssuingTaxInvoice] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [helping, setHelping] = useState(false);
   // What this shop has bought (M4-09). Read from the till's own database, so it answers the same
   // during an outage as it does online — a capability that vanished with the internet would put
   // the network back on the critical path of selling.
-  const { allows } = useEntitlement();
+  //  as well as , for the shop name the cloud last answered with. The two
+  // come from one poll rather than two so the header and the licence notice can never disagree.
+  const { allows, entitlement } = useEntitlement();
   // The receipt a tax invoice would most likely be asked for. Survives `clear()` on purpose:
   // the customer asks after the sale is finished and the cart has already been emptied.
   const [lastSaleInvoiceNumber, setLastSaleInvoiceNumber] = useState<string | null>(null);
@@ -171,7 +278,7 @@ export default function Page() {
   }, [clearCart]);
 
   // M2-01. Whether this till may trade at all, answered by the backend and never assumed.
-  const shift = useShift(BRANCH_CODE, TERMINAL_CODE);
+  const shift = useShift(shop.branchCode, shop.terminalCode);
 
   // ------------------------------------------------------------------ catalogue lookup
 
@@ -268,8 +375,8 @@ export default function Page() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             clientUuid,
-            branchCode: BRANCH_CODE,
-            terminalCode: TERMINAL_CODE,
+            branchCode: shop.branchCode,
+            terminalCode: shop.terminalCode,
             taxMode: totals.taxMode,
             taxRateBp: totals.taxRateBp,
             subtotalMinor: totals.subtotalMinor,
@@ -311,7 +418,7 @@ export default function Page() {
         // allowed to make a committed sale look like it failed.
         const printed = await print(
           buildReceiptWithDrawerKick(
-            receiptDataFor(cart, outcome, committed, customer?.name ?? null),
+            receiptDataFor(shop, cart, outcome, committed, customer?.name ?? null),
           ),
         );
         const outcomeText = withPrintOutcome(text, printed, 'receipt');
@@ -330,7 +437,7 @@ export default function Page() {
         setBusy(false);
       }
     },
-    [cart, clear, customer?.clientUuid, customer?.name, shift],
+    [cart, clear, customer?.clientUuid, customer?.name, shift, shop],
   );
 
   /**
@@ -359,30 +466,33 @@ export default function Page() {
    * A Z-report a cashier has to remember to ask for is a Z-report that does not get filed. The
    * figures come from the backend's frozen record (M2-11), not from anything this screen kept.
    */
-  const printZReport = useCallback(async (closed: ClosedShift) => {
-    try {
-      const response = await fetch(`/api/reports/z/${closed.id}`, { cache: 'no-store' });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
+  const printZReport = useCallback(
+    async (closed: ClosedShift) => {
+      try {
+        const response = await fetch(`/api/reports/z/${closed.id}`, { cache: 'no-store' });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
 
-      const report = body as Omit<ZReportData, 'storeName' | 'tagline'>;
-      const printed = await print(
-        buildZReport({ ...report, storeName: STORE_NAME, tagline: TAGLINE }),
-      );
-      const varianceText =
-        closed.varianceMinor === 0
-          ? 'drawer balanced'
-          : `drawer ${closed.varianceMinor > 0 ? 'over' : 'short'} ${formatMinor(Math.abs(closed.varianceMinor))}`;
-      const outcome = withPrintOutcome(`Shift closed — ${varianceText}`, printed, 'Z-report');
-      setMessage({ tone: outcome.failed ? 'danger' : 'ok', text: outcome.text });
-    } catch (e) {
-      // The shift is closed either way. Say what happened to the paper, not that the close failed.
-      setMessage({
-        tone: 'danger',
-        text: `Shift closed, but the Z-report could not be built: ${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
-  }, []);
+        const report = body as Omit<ZReportData, 'storeName' | 'tagline'>;
+        const printed = await print(
+          buildZReport({ ...report, storeName: shop.shopName, tagline: TAGLINE }),
+        );
+        const varianceText =
+          closed.varianceMinor === 0
+            ? 'drawer balanced'
+            : `drawer ${closed.varianceMinor > 0 ? 'over' : 'short'} ${formatMinor(Math.abs(closed.varianceMinor))}`;
+        const outcome = withPrintOutcome(`Shift closed — ${varianceText}`, printed, 'Z-report');
+        setMessage({ tone: outcome.failed ? 'danger' : 'ok', text: outcome.text });
+      } catch (e) {
+        // The shift is closed either way. Say what happened to the paper, not that the close failed.
+        setMessage({
+          tone: 'danger',
+          text: `Shift closed, but the Z-report could not be built: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    },
+    [shop.shopName],
+  );
 
   // ---------------------------------------------------------------------- returns (M2)
 
@@ -390,10 +500,10 @@ export default function Page() {
     async (outcome: RefundOutcome) => {
       setReturning(false);
       const data: CreditNoteData = {
-        storeName: STORE_NAME,
+        storeName: shop.shopName,
         tagline: TAGLINE,
-        branchCode: BRANCH_CODE,
-        terminalCode: TERMINAL_CODE,
+        branchCode: shop.branchCode,
+        terminalCode: shop.terminalCode,
         creditNoteNumber: outcome.creditNoteNumber,
         saleInvoiceNumber: outcome.saleInvoiceNumber,
         refundedAt: outcome.refundedAt,
@@ -412,7 +522,7 @@ export default function Page() {
       setMessage({ tone: text.failed ? 'danger' : 'ok', text: text.text });
       void shift.refresh();
     },
-    [shift],
+    [shift, shop.branchCode, shop.shopName, shop.terminalCode],
   );
 
   // -------------------------------------------------------------------- keyboard (M1-10)
@@ -426,8 +536,19 @@ export default function Page() {
       cashingUp ||
       returning ||
       choosingCustomer ||
+      issuingTaxInvoice ||
+      searching ||
+      helping,
+    [
+      cashingUp,
+      choosingCustomer,
+      helping,
       issuingTaxInvoice,
-    [cashingUp, choosingCustomer, issuingTaxInvoice, picker, returning, tendering],
+      picker,
+      returning,
+      searching,
+      tendering,
+    ],
   );
   const noPicker = useCallback(() => !interactionsBlocked(), [interactionsBlocked]);
 
@@ -437,6 +558,8 @@ export default function Page() {
     { key: '+', run: () => changeQty(cart.selected, 1), when: noPicker },
     { key: '-', run: () => changeQty(cart.selected, -1), when: noPicker },
     { key: 'F2', run: () => changeQty(cart.selected, 1), when: noPicker },
+    { key: 'F1', run: () => setHelping(true), when: noPicker },
+    { key: 'F3', run: () => setSearching(true), when: noPicker },
     { key: 'F4', run: () => voidLine(cart.selected), when: noPicker },
     { key: 'F6', run: () => setChoosingCustomer(true), when: noPicker },
     { key: 'F8', run: clear, when: noPicker },
@@ -458,7 +581,14 @@ export default function Page() {
     {
       key: 'Escape',
       run: () => setPicker(null),
-      when: () => !tendering && !cashingUp && !returning && !choosingCustomer && !issuingTaxInvoice,
+      when: () =>
+        !tendering &&
+        !cashingUp &&
+        !returning &&
+        !choosingCustomer &&
+        !issuingTaxInvoice &&
+        !searching &&
+        !helping,
     },
   ]);
 
@@ -478,14 +608,14 @@ export default function Page() {
   }, [picker, addProduct]);
 
   const functionKeys: FunctionKey[] = [
-    { key: 'F1', label: 'Help' },
+    { key: 'F1', label: 'Help', run: () => setHelping(true) },
     {
       key: 'F2',
       label: 'Qty +',
       run: () => changeQty(cart.selected, 1),
       disabled: cart.selected < 0,
     },
-    { key: 'F3', label: 'Search' },
+    { key: 'F3', label: 'Search', run: () => setSearching(true), disabled: !shift.canTrade },
     {
       key: 'F4',
       label: 'Void line',
@@ -522,6 +652,7 @@ export default function Page() {
       <SyncStatusStrip />
       {/* Below the sync strip, because a lapse is the explanation for what that strip is showing. */}
       <LicenceNotice />
+      <UpdateNotice />
 
       <header className="border-hair flex shrink-0 items-center gap-4 border-b px-4 py-3">
         <div className="flex-1">
@@ -531,6 +662,18 @@ export default function Page() {
             disabled={interactionsBlocked()}
           />
         </div>
+        {/*
+          Whose till this is and who is on it. Beside the scan field rather than in the sync strip,
+          because it answers a question a cashier has at the start of a shift rather than one about
+          the network — and because a shop-name mismatch needs to be somewhere a person looks
+          without being told to.
+        */}
+        <TillIdentity
+          shopName={shop.shopName}
+          terminalCode={shop.terminalCode}
+          operatorName={shift.status?.operatorName ?? null}
+          cloudShopName={entitlement?.tenantName ?? null}
+        />
         {/*
           The only hint that the back office exists. Deliberately small and out of the way: it is
           not a cashier's control, and a prominent button labelled "back office" beside the scan
@@ -574,12 +717,57 @@ export default function Page() {
         </p>
       )}
 
-      {/* The only scrolling region on the screen. */}
+      {/*
+        Two columns (M6). The receipt takes everything the action rail does not: the till
+        deliberately has no product-button grid, because a shop's catalogue does not fit on
+        a screen and the barcode gun is faster than any grid for the items that do. Products
+        without a barcode are reached through F3 search instead.
+
+        The cart is still the only scrolling region on the screen (M1-07) — it is simply one
+        level deeper now, with the totals beneath it rather than beside it.
+      */}
       <div className="flex min-h-0 flex-1">
-        <main className="min-h-0 flex-1 overflow-y-auto">
-          <CartLines cart={cart} />
-        </main>
-        <TotalsPanel cart={cart} />
+        <section className="border-hair flex min-h-0 flex-1 flex-col border-r">
+          <main className="min-h-0 flex-1 overflow-y-auto">
+            {/*
+              Tapping a line selects it, the same as an arrow key would (M6). Gated on the
+              same `interactionsBlocked` as everything else: an overlay covers the cart, and
+              a tap that lands on a row behind it must do nothing at all.
+            */}
+            <CartLines
+              cart={cart}
+              onSelect={(index) => {
+                if (interactionsBlocked()) return;
+                setSelected(index);
+              }}
+            />
+          </main>
+          <TotalsPanel cart={cart} />
+        </section>
+
+        {/*
+          The touch half of the till (M6). Every control on it runs the same callback its
+          function key runs — see ActionRail. It is disabled wholesale while any overlay is
+          open, so a tap that lands behind one does nothing.
+        */}
+        <ActionRail
+          multiplier={multiplier}
+          onDigit={(digit) =>
+            setQtyBuffer((current) => (current + digit).replace(/^0+/, '').slice(0, 3))
+          }
+          onClearMultiplier={() => setQtyBuffer('')}
+          totalMinor={cart.totals.totalMinor}
+          onSearch={() => setSearching(true)}
+          onVoidLine={() => voidLine(cart.selected)}
+          onClear={clear}
+          onTender={openTender}
+          canSearch={shift.canTrade}
+          canVoid={cart.selected >= 0}
+          canClear={cart.lines.length > 0}
+          canTender={cart.lines.length > 0 && !busy && shift.canTrade}
+          tenderLabel={busy ? 'Working…' : 'Tender'}
+          disabled={interactionsBlocked()}
+        />
       </div>
 
       <FunctionBar keys={functionKeys} />
@@ -618,8 +806,8 @@ export default function Page() {
       {cashingUp && (
         <ShiftOverlay
           status={shift.status}
-          branchCode={BRANCH_CODE}
-          terminalCode={TERMINAL_CODE}
+          branchCode={shop.branchCode}
+          terminalCode={shop.terminalCode}
           onDone={() => void shift.refresh()}
           onClosed={(closed) => void printZReport(closed)}
           onCancel={() => setCashingUp(false)}
@@ -628,8 +816,8 @@ export default function Page() {
 
       {returning && (
         <RefundOverlay
-          branchCode={BRANCH_CODE}
-          terminalCode={TERMINAL_CODE}
+          branchCode={shop.branchCode}
+          terminalCode={shop.terminalCode}
           onDone={(outcome) => void onRefunded(outcome)}
           onCancel={() => setReturning(false)}
         />
@@ -647,8 +835,8 @@ export default function Page() {
       {choosingCustomer && (
         <CustomerOverlay
           attached={customer}
-          branchCode={BRANCH_CODE}
-          terminalCode={TERMINAL_CODE}
+          branchCode={shop.branchCode}
+          terminalCode={shop.terminalCode}
           onAttach={(chosen) => {
             setCustomer(chosen);
             setChoosingCustomer(false);
@@ -670,6 +858,20 @@ export default function Page() {
             void printTaxInvoice(invoice);
           }}
           onClose={() => setIssuingTaxInvoice(false)}
+        />
+      )}
+
+      {helping && <HelpOverlay onClose={() => setHelping(false)} />}
+
+      {searching && (
+        <SearchOverlay
+          lookup={lookup}
+          onPick={(product) => {
+            addProduct(product);
+            setSearching(false);
+            setMessage(null);
+          }}
+          onCancel={() => setSearching(false)}
         />
       )}
     </div>

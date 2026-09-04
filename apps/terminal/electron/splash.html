@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>StoreX</title>
+    <style>
+      /* Deliberately self-contained: the splash has to render before the Next server that
+         serves every other stylesheet in this application is running. It also matches the
+         till's own dark appliance ground so startup does not flash white at a cashier
+         working in a dim shop. */
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.5rem;
+        background: #0a0e12;
+        color: #e6edf3;
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          Segoe UI,
+          sans-serif;
+        user-select: none;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.75rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .mark {
+        color: #0fa0f3;
+      }
+      #status {
+        color: #8b98a5;
+        min-height: 1.5em;
+        text-align: center;
+        max-width: 34rem;
+        padding: 0 2rem;
+      }
+      /* An indeterminate bar, not a percentage. First launch runs initdb and then Flyway,
+         and neither reports progress — a fake percentage that sticks at 80% teaches a
+         shopkeeper to distrust every progress bar this application ever shows. */
+      .track {
+        width: 16rem;
+        height: 3px;
+        background: #1c2530;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .track > div {
+        width: 40%;
+        height: 100%;
+        background: #0fa0f3;
+        animation: slide 1.4s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% {
+          transform: translateX(-100%);
+        }
+        100% {
+          transform: translateX(250%);
+        }
+      }
+      #error {
+        display: none;
+        max-width: 34rem;
+        padding: 0 2rem;
+        color: #ff8a8a;
+        text-align: center;
+        white-space: pre-wrap;
+      }
+      body.failed .track {
+        display: none;
+      }
+      body.failed #error {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Store<span class="mark">X</span></h1>
+    <div class="track"><div></div></div>
+    <p id="status">Starting…</p>
+    <p id="error"></p>
+    <script>
+      // The launcher pushes progress in through executeJavaScript, so there is no preload
+      // and no IPC surface on a window that exists for eight seconds.
+      window.setStatus = (text) => {
+        document.getElementById('status').textContent = text;
+      };
+      window.setFailed = (message) => {
+        document.body.classList.add('failed');
+        document.getElementById('status').textContent = 'StoreX could not start.';
+        document.getElementById('error').textContent = message;
+      };
+    </script>
+  </body>
+</html>

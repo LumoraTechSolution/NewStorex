@@ -257,7 +257,7 @@ class SalesReportTest {
                         null,
                         null));
 
-        ClosedShift row = onlyShift(reports.closedShifts(shop.tenantId(), 50), shift.id());
+        ClosedShift row = onlyShift(reports.closedShifts(shop.tenantId(), null, null, null, null, 50), shift.id());
 
         assertThat(row.branchCode()).isEqualTo(shop.branchCode());
         assertThat(row.openedByName()).isEqualTo("Fixture Manager");
@@ -281,7 +281,7 @@ class SalesReportTest {
         ShopFixture.Shop shop = fixtures.seed();
         ShiftResponse open = openShift(shop);
 
-        assertThat(reports.closedShifts(shop.tenantId(), 200))
+        assertThat(reports.closedShifts(shop.tenantId(), null, null, null, null, 200))
                 .noneMatch(row -> row.id() == open.id());
     }
 

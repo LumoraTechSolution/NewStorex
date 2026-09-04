@@ -44,7 +44,7 @@ run this backend.
 | Variable | Example | Notes |
 | --- | --- | --- |
 | `SPRING_PROFILES_ACTIVE` | `cloud` | **Read the warning below.** |
-| `CLOUD_DATABASE_URL` | `jdbc:postgresql://ep-xxx.ap-southeast-1.aws.neon.tech:5432/lumora_cloud?sslmode=require&channelBinding=require` | JDBC form, not the provider's URI. TLS parameters are not optional. |
+| `CLOUD_DATABASE_URL` | `jdbc:postgresql://ep-xxxx.c-3.ap-southeast-1.aws.neon.tech:5432/lumora_cloud?sslmode=require` | JDBC form, not the provider's URI. TLS parameters are not optional. |
 | `CLOUD_DATABASE_USER` | `lumora_owner` | |
 | `CLOUD_DB_PASSWORD` | *(secret)* | Host's secret store. Never the repo, never a file in the image. |
 | `LUMORA_CONSOLE_ORIGINS` | `https://storex-console.vercel.app` | Comma-separated, no spaces, no trailing slash, scheme included. |
@@ -72,6 +72,47 @@ run this backend.
 | `SERVER_PORT` | `10000` | Only where the host dictates a port. Render injects `$PORT`; set this to match. Omit elsewhere and it listens on 8082. |
 | `CLOUD_DB_POOL_SIZE` | `5` | See [connection pool](#the-connection-pool) below. |
 | `SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE` | `1` | Lets a serverless Postgres suspend when the shop is closed. |
+| `JAVA_TOOL_OPTIONS` | *(image default + `-Djava.net.preferIPv4Stack=true`)* | Required on Render. See [IPv4](#ipv4-must-be-forced-on-render) — it **replaces** the image's value, so pass it whole. |
+
+### Required for cloud backups (M5-06)
+
+Without these the service still starts, logs a warning, and writes shop archives to the
+container's own filesystem — **which Render recreates on every deploy.** Uploads succeed, rows are
+written, the till is told everything is fine, and the archives are gone at the next release. That
+is the worst failure mode this service has, so the warning line names it explicitly:
+
+```
+Cloud backups have no object storage configured and will be written to ./cloud-backups.
+```
+
+| Variable | Example | Notes |
+| --- | --- | --- |
+| `LUMORA_BACKUP_S3_BUCKET` | `storex-backups` | |
+| `LUMORA_BACKUP_S3_ENDPOINT` | `https://<account-id>.r2.cloudflarestorage.com` | R2's account endpoint. Omit on AWS proper, where the region determines it. |
+| `LUMORA_BACKUP_S3_REGION` | `auto` | R2 has no regions and still requires the signature to name one. |
+| `LUMORA_BACKUP_S3_ACCESS_KEY_ID` | *(secret)* | |
+| `LUMORA_BACKUP_S3_SECRET_ACCESS_KEY` | *(secret)* | |
+| `LUMORA_BACKUP_KEEP` | `14` | Archives kept per shop. A week of twice-daily uploads. |
+| `LUMORA_BACKUP_MAX_BYTES` | `536870912` | Largest archive accepted, in bytes. |
+
+**Why Cloudflare R2.** 10 GB free with no egress charge, and the S3 API — so this is not soldered
+to a vendor. Egress matters more than it looks: the day anybody uses these is the day a shop is
+downloading its entire database, and providers that meter that charge for exactly the event you
+built the feature for.
+
+**Making the bucket and the token:**
+
+1. Cloudflare dashboard → **R2** → *Create bucket*, named `storex-backups`. Keep it **private** —
+   an object here is a shop's whole database, staff and customers included.
+2. **R2 → Manage API Tokens → Create API Token.** Permission **Object Read & Write**, scoped to
+   that one bucket.
+3. Copy the **Access Key ID**, the **Secret Access Key**, and the account endpoint shown beside
+   them. The secret is displayed once.
+4. Set the five variables above in Render's dashboard, never in a file, and redeploy.
+
+The tokens on the shop PCs are unaffected by any of this: a till uploads to *this service*, with
+its own tenant credential, and never sees an R2 key. That is deliberate — a shared storage key on
+every shop-floor PC in the country would be one stolen laptop away from every shop's history.
 
 ### Set once, then deleted
 
@@ -108,6 +149,57 @@ The knob is an environment variable rather than a lowered default because **the 
 the environment, not the code** — and because `application-desktop.yml` sets its own `8` and never
 reads this variable, so the shop PC is unaffected either way.
 
+### Copy the hostname from Neon; never reconstruct it
+
+**Use exactly the hostname Neon's connection string gives you.** Current Neon endpoints look like:
+
+```
+ep-dawn-credit-azh6unu8.c-3.ap-southeast-1.aws.neon.tech
+```
+
+The `.c-3.` segment is part of the address and **must be kept**. Dropping it, or using a stale
+endpoint id after recreating a project or branch, produces:
+
+```
+SQL State : 28P01
+ERROR: password authentication failed for user 'neondb_owner'
+```
+
+**A wrong Neon hostname reports as an authentication failure, not as a connection or DNS error.**
+This is the single most misleading failure in this deployment: the message names the user, so every
+instinct says to go and reset the password, and the password is fine. Verified by measurement — the
+same credentials succeed with `.c-3.` and fail with `28P01` without it.
+
+Two consequences worth internalising:
+
+- **`nslookup` cannot validate a Neon hostname.** Neon serves wildcard DNS, so a lookup returns an
+  answer for any name of roughly the right shape, including one no endpoint answers on. It is a test
+  that cannot fail and therefore proves nothing.
+- **When you recreate a database, branch or project, the endpoint id changes.** The old hostname
+  keeps resolving and keeps returning `28P01`.
+
+Before touching credentials, test the connection directly and take Render out of the picture:
+
+```powershell
+$env:PGPASSWORD = '...'
+psql "host=ep-xxxx.c-3.ap-southeast-1.aws.neon.tech port=5432 dbname=lumora_cloud user=neondb_owner sslmode=require" -c "select current_user, current_database();"
+```
+
+Succeeds locally but fails on the host → the problem is how the value is stored in the host. Fails
+locally too → the hostname or the credential is wrong, and it is usually the hostname.
+
+Separately, set `JAVA_TOOL_OPTIONS` to the Dockerfile's value plus
+`-Djava.net.preferIPv4Stack=true`: Render's free tier has no working outbound IPv6, and Neon
+publishes AAAA records. Setting the variable **replaces** the image's default rather than appending
+to it, so pass it whole, **on one line** — a newline inside the value truncates the flag list. Confirm
+the next boot's `Picked up JAVA_TOOL_OPTIONS:` line ends with the flag, or it did not save.
+
+### Neon's parameter spellings are libpq's, not JDBC's
+
+Neon hands you `?sslmode=require&channel_binding=require`. `sslmode` is spelled the same in both;
+`channel_binding` is **libpq's** name and the JDBC driver's is `channelBinding`, so pasting Neon's
+string verbatim silently ignores it. Leave it off entirely — see below.
+
 ### The direct endpoint, not the pooler
 
 Neon offers a PgBouncer endpoint (`...-pooler...`). **Do not use it here.** PgBouncer's transaction
@@ -120,19 +212,23 @@ mode breaks two things this application relies on:
 At two tenants with one backend instance, the pooler buys nothing against those hazards. Revisit
 only when running more than one instance, and read this paragraph again first.
 
+Neon's connection-details panel has a **Connection pooling** toggle that is often on by default, and
+the resulting hostname carries `-pooler` before the region segment. Check for that substring before
+pasting the URL anywhere.
+
 ### The URI is split by hand, at deploy time
 
 The provider hands you one string:
 
 ```
-postgresql://lumora_owner:npg_AbC123@ep-xxx.ap-southeast-1.aws.neon.tech/lumora_cloud?sslmode=require
+postgresql://neondb_owner:npg_AbC123@ep-xxxx.c-3.ap-southeast-1.aws.neon.tech/lumora_cloud?sslmode=require&channel_binding=require
 ```
 
 Split it into the three variables yourself, once per environment:
 
 ```
-CLOUD_DATABASE_URL  = jdbc:postgresql://ep-xxx.ap-southeast-1.aws.neon.tech:5432/lumora_cloud?sslmode=require&channelBinding=require
-CLOUD_DATABASE_USER = lumora_owner
+CLOUD_DATABASE_URL  = jdbc:postgresql://ep-xxxx.c-3.ap-southeast-1.aws.neon.tech:5432/lumora_cloud?sslmode=require
+CLOUD_DATABASE_USER = neondb_owner
 CLOUD_DB_PASSWORD   = npg_AbC123
 ```
 
@@ -142,9 +238,22 @@ natively — parsing a provider's URI would be a Render-shaped wart on the porta
 
 **TLS must be in the URL.** The PostgreSQL JDBC driver defaults to `sslmode=prefer`, which tries TLS
 and **silently falls back to plaintext** if the server allows it. Neon refuses plaintext, so you
-would get TLS anyway — but "encrypted because the server insisted" is luck, not a posture.
-`channelBinding=require` adds MITM resistance without shipping a CA bundle, by binding the SCRAM
-handshake to the TLS channel.
+would get TLS anyway — but "encrypted because the server insisted" is luck, not a posture. So
+`sslmode=require`, always.
+
+**Do not add `channelBinding=require` on Neon.** It is tempting — it binds the SCRAM handshake to
+the TLS channel and buys MITM resistance without shipping a CA bundle — but Neon's connection proxy
+does not offer `SCRAM-SHA-256-PLUS`, so the driver aborts the handshake and the server reports:
+
+```
+SQL State : 28P01
+ERROR: password authentication failed for user 'neondb_owner'
+```
+
+A correct password, reported as a bad one. This cost a deploy cycle to find, because every instinct
+says to go and reset the password. (Note also that Neon's proxy quotes the username with single
+quotes where stock Postgres uses double — that is Neon's phrasing, not a stray character in the
+value, and it is not a clue.)
 
 ---
 
@@ -273,6 +382,71 @@ why `/actuator/**` sits outside the auth filter's `/api/*` pattern — a keep-wa
 shop's key. 750 free instance-hours a month exceeds a month's 730, so a permanently warm free
 service fits. Do not build console-side "waking up…" UI; the keep-warm makes that code path dead.
 
+All of this applies to the free tier only. On Render Starter the service never sleeps, and the
+keep-warm should be **deleted** rather than left running — see [Going paid](#going-paid-when-a-client-is).
+
+---
+
+## Going paid, when a client is
+
+The free tier is right for a pilot and wrong for a customer who is billing their
+own shop against it. The upgrade is two dashboard clicks and **no change to this
+document's contract** — same image, same variables, same region.
+
+| | Free | Paid | What the money actually buys |
+| --- | --- | --- | --- |
+| Render | sleeps after 15 idle min, 512 MB | **Starter, $7/mo** — always on, 512 MB | No cold start. The keep-warm becomes unnecessary |
+| Neon | 500 MB, 24 h restore, no SLA | **Launch, $19/mo** — 10 GB, 7-day PITR, support | The restore window, far more than the storage |
+
+**$26/month for the whole estate, not per client.** One Neon project holds every
+tenant — that is what `tenant_id` and the `(tenant_id, client_uuid)` uniqueness in
+`V206` are for. Measured against the live database, a shop at 100 sales/day uses
+~130–260 MB/year, so 10 GB is roughly 20–40 shop-years. At three clients the
+infrastructure is under $9 each.
+
+**Neon Launch is the half not to skip**, and not for the storage — free tier's
+500 MB already lasts a small shop years. It is the **7-day point-in-time
+restore**. When a shop says "we did something wrong on Tuesday", 24 hours is
+already gone.
+
+Render Starter keeps the same 512 MB as free, which is enough because the image
+already sets `MaxRAMPercentage=70` and the deployed pool is 5. Only go to the
+$25 tier if the JVM is actually short of heap — check before paying for it.
+
+### Turn the keep-warm off at the same time
+
+Once Render is always-on, **delete the cron-job.org job**. It stops doing
+anything, adds noise to the logs, and — worse — becomes a monitor that can raise
+a false alarm about a service that is perfectly healthy. A keep-warm that
+outlives the reason for it is not harmless; it is a thing that pages you at
+night for nothing.
+
+### What is deliberately not on this list
+
+- **A cheap VPS** (Hetzner, ~$6, Postgres and the container on one box). Genuinely
+  cheaper, and it makes backups, patching, disk monitoring and the 3am restore
+  your job. For a small team with paying clients, $26 to keep that someone
+  else's problem is the better trade.
+- **A second backend instance** (+$7). Only when one client's traffic measurably
+  affects another's response times. Note the consequence before doing it: the
+  Hikari pool of 5 becomes 10 across instances, which pushes you toward Neon's
+  pooler — and back into the Flyway advisory-lock hazard documented above.
+- **Neon Scale ($69)**. For longer PITR or read replicas. Nothing here needs
+  either yet.
+
+### Storage is not the thing to watch
+
+There is **no purge job anywhere in the schema**, deliberately — `V205` is
+explicit that a lapsed licence must stop ingest, not erase a shop's history. So
+the database only ever grows. Check it quarterly rather than assuming:
+
+```sql
+SELECT pg_size_pretty(pg_database_size('lumora_cloud'));
+```
+
+The trigger for upgrading is not a number on that query. It is the day someone's
+livelihood depends on the data, which usually arrives well before the disk does.
+
 ---
 
 ## Backups
@@ -291,7 +465,9 @@ M5-06 automates this, three things are the floor:
 3. **One restore drill, executed before a pilot shop goes live.** Restore into a scratch Neon branch
    and sign in to the console against it. A backup you have never restored is not a backup.
 
-The trigger for the paid tier is a third paying customer, not a date.
+The trigger for the paid tier is a paying customer, not a date — see
+[Going paid](#going-paid-when-a-client-is), where the 7-day restore window is the reason rather than
+the storage.
 
 ---
 

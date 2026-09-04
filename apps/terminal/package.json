@@ -2,7 +2,7 @@
   "name": "@lumora/terminal",
   "version": "0.0.0",
   "private": true,
-  "description": "Lumora Terminal \u2014 cashier terminal and back office. Ships as a Windows installer and talks only to the local backend.",
+  "description": "Lumora Terminal — cashier terminal and back office. Ships as a Windows installer and talks only to the local backend.",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
@@ -14,13 +14,16 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "rebuild:serial": "electron-rebuild --only=serialport",
-    "clean": "node -e \"for (const d of ['.next','.turbo']) require('node:fs').rmSync(d,{recursive:true,force:true})\""
+    "clean": "node -e \"for (const d of ['.next','.turbo']) require('node:fs').rmSync(d,{recursive:true,force:true})\"",
+    "dist": "node ../../scripts/build-installer.mjs",
+    "pack": "electron-builder --win --x64 --dir"
   },
   "dependencies": {
     "@lumora/api-client": "workspace:*",
     "@lumora/domain": "workspace:*",
     "@lumora/ui": "workspace:*",
-    "next": "14.2.21",
+    "electron-updater": "^6",
+    "next": "14.2.35",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -34,10 +37,92 @@
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "autoprefixer": "^10.4.20",
-    "electron": "^33.3.1",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "main": "electron/main.cjs",
+  "author": "Lumora Technologies",
+  "build": {
+    "appId": "lk.lumora.storex",
+    "productName": "StoreX",
+    "copyright": "Copyright © Lumora Technologies",
+    "electronVersion": "33.4.11",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "package.json",
+      "!**/*.map",
+      "!node_modules/**/*",
+      "node_modules/serialport/**/*",
+      "node_modules/@serialport/**/*",
+      "node_modules/node-addon-api/**/*",
+      "node_modules/bindings/**/*",
+      "node_modules/file-uri-to-path/**/*",
+      "node_modules/debug/**/*",
+      "node_modules/ms/**/*",
+      "node_modules/electron-updater/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/fs-extra/**/*",
+      "node_modules/graceful-fs/**/*",
+      "node_modules/js-yaml/**/*",
+      "node_modules/argparse/**/*",
+      "node_modules/jsonfile/**/*",
+      "node_modules/universalify/**/*",
+      "node_modules/lazy-val/**/*",
+      "node_modules/lodash.escaperegexp/**/*",
+      "node_modules/lodash.isequal/**/*",
+      "node_modules/sax/**/*",
+      "node_modules/semver/**/*",
+      "node_modules/tiny-typed-emitter/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../../runtime/jre",
+        "to": "runtime/jre"
+      },
+      {
+        "from": "../../runtime/pgsql",
+        "to": "runtime/pgsql"
+      },
+      {
+        "from": "../../runtime/backend",
+        "to": "runtime/backend"
+      },
+      {
+        "from": "../../runtime/web",
+        "to": "runtime/web"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "StoreX-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "StoreX",
+      "include": "build/installer.nsh",
+      "artifactName": "StoreX-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "${env.LUMORA_UPDATE_URL}"
+      }
+    ]
   }
 }

@@ -26,4 +26,11 @@ public record ProductRow(
         Long categoryId,
         String categoryName,
         List<String> barcodes,
+        /**
+         * Reorder when on hand falls to or below this, or null when nobody is watching this product
+         * (V120). Null and zero are different answers and must stay that way: zero is a shopkeeper
+         * saying "tell me the moment this is empty", and folding it into "unset" would lose exactly
+         * the product they cared most about.
+         */
+        Integer reorderPoint,
         boolean active) {}

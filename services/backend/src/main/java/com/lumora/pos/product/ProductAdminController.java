@@ -198,7 +198,9 @@ public class ProductAdminController {
             @NotBlank String taxMode,
             int taxRateBp,
             Long categoryId,
-            List<String> barcodes) {
+            List<String> barcodes,
+            /** Absent or null leaves the product unwatched by the low-stock report (V120). */
+            Integer reorderPoint) {
 
         ProductDraft toDraft() {
             return new ProductDraft(
@@ -209,7 +211,8 @@ public class ProductAdminController {
                     taxMode,
                     taxRateBp,
                     categoryId,
-                    barcodes == null ? List.of() : barcodes);
+                    barcodes == null ? List.of() : barcodes,
+                    reorderPoint);
         }
     }
 

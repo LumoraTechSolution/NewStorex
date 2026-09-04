@@ -8,10 +8,13 @@
  * so a cookie would have to be cross-site — `SameSite=None`, which browsers increasingly refuse in
  * third-party contexts and which no amount of configuration makes reliable on iOS.
  *
- * What makes the trade acceptable is what the token can do. It is read-only by construction: the
- * server refuses a console session on every write path (`AuthenticatedPrincipal`), so a stolen one
- * discloses takings and cannot alter a figure, issue a refund or touch stock. It also expires, and
- * signing out revokes it server-side rather than merely forgetting it here.
+ * What makes the trade acceptable is what the token can do. It is read-only by construction with
+ * exactly one exception: the server refuses a console session on every write path
+ * (`AuthenticatedPrincipal`) except acknowledging a cash variance (M6-10), which touches no money
+ * and no ledger. So a stolen one discloses takings, can hide an alert — under its own name, on a
+ * shift that stays listed as reviewed — and still cannot alter a figure, issue a refund or touch
+ * stock. It also expires, and signing out revokes it server-side rather than merely forgetting it
+ * here.
  *
  * <h2>401 means the session is gone, not that the request was wrong</h2>
  *
@@ -94,6 +97,32 @@ export async function logout(token: string): Promise<void> {
   forgetToken();
 }
 
+/**
+ * The console's one write (M6-10).
+ *
+ * <p>Kept as a separate function rather than a `method` option on `get`, so that every write this
+ * app can perform is one grep away. There is exactly one, and the day there is a second, somebody
+ * should have to think about it.
+ */
+export async function post<T>(path: string, token: string, body?: unknown): Promise<T> {
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new SessionExpiredError();
+  }
+  if (!response.ok) {
+    const failed = await response.json().catch(() => ({}));
+    throw new Error(failed.detail ?? `Could not save (HTTP ${response.status})`);
+  }
+  return (await response.json()) as T;
+}
+
 export async function get<T>(path: string, token: string): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -136,6 +165,95 @@ export interface CashVariance {
   closedAt: string;
   varianceMinor: number;
   varianceReason: string | null;
+  /** Null until somebody said they had looked at it (M6-10). */
+  acknowledgedAt: string | null;
+  acknowledgedBy: string | null;
+}
+
+export interface CountedDenomination {
+  phase: string;
+  denominationMinor: number;
+  qty: number;
+}
+
+/** One variance in full, including the denominations behind the count. */
+export interface VarianceDetail {
+  shiftClientUuid: string;
+  branchCode: string;
+  terminalCode: string;
+  openedAt: string;
+  closedAt: string;
+  openingFloatMinor: number;
+  countedCashMinor: number;
+  expectedCashMinor: number;
+  varianceMinor: number;
+  varianceReason: string | null;
+  varianceNote: string | null;
+  counts: CountedDenomination[];
+  acknowledgedAt: string | null;
+  acknowledgedBy: string | null;
+  acknowledgementNote: string | null;
+}
+
+/**
+ * A product and what is on the shelf (M6-12).
+ *
+ * `onHand` is Σ movements and can be negative — a sale rung up for stock the shop never recorded
+ * receiving. `reorderPoint` is null when the product is not watched, which is a different fact from
+ * a threshold of 0 meaning "tell me when it is empty".
+ */
+export interface StockLine {
+  productClientUuid: string;
+  sku: string;
+  name: string;
+  category: string | null;
+  onHand: number;
+  reorderPoint: number | null;
+  priceMinor: number;
+}
+
+/**
+ * Who was on a till on one day, and what they took (M6-13).
+ *
+ * `operator` is null for a shift closed before the till started sending it — the cloud was never
+ * told, and never will be, because a closed shift is not redelivered. The row is still listed, so a
+ * day's takings here always add up to the day's takings on the card above it.
+ */
+export interface OperatorDay {
+  operatorClientUuid: string | null;
+  operator: string | null;
+  shiftCount: number;
+  saleCount: number;
+  totalMinor: number;
+  varianceMinor: number;
+  /**
+   * True while one of this person's shifts today is still open (M6-14).
+   *
+   * <p>The whole of the console's first line rests on this: <em>Open · Nimal since 9:04</em>. It is
+   * derived on the cloud from a shift that has not been delivered closed, so a till that stopped
+   * syncing mid-shift reads as open — which is why the sentence is shown beside the sync time and
+   * never on its own.
+   */
+  onNow: boolean;
+  /** When this person first opened a till today. Null for a shift the cloud was never told about. */
+  openedAt: string | null;
+}
+
+/**
+ * One quarter hour of the trading day, and what a normal one of this weekday does in it (M6-14).
+ *
+ * <p>`usualSaleCount` and `usualTotalMinor` are averages over the same weekday in the four weeks
+ * behind today, counted only over the days the shop actually traded. Both are fractions on purpose:
+ * rounding them would flatten the quiet half of a day to zero and make a slow morning look like a
+ * closed one.
+ */
+export interface PulseSlot {
+  /** The start of the slot in the shop's own clock, minutes from midnight. */
+  minuteOfDay: number;
+  saleCount: number;
+  totalMinor: number;
+  usualSaleCount: number;
+  usualTotalMinor: number;
 }
 
 export interface RecentSale {

@@ -36,7 +36,18 @@ management:
     health:
       probes:
         enabled: true
-      show-details: always
+      # Status only, no per-component detail. `/actuator/**` deliberately sits outside
+      # TenantAuthFilter's `/api/*` pattern so a load balancer — and the keep-warm cron in
+      # DEPLOYMENT.md — can reach it without holding a shop's key. That makes it the one
+      # unauthenticated path on the cloud, and `always` was answering it with the state of
+      # every component, the database included, to anybody who asked.
+      #
+      # Nothing that reads this endpoint needs more than UP or DOWN: the cron wants a 200,
+      # Render's readiness probe wants a 200, and a person diagnosing a real outage has the
+      # logs. `when-authorized` would be the wrong knob here rather than a stricter one —
+      # there is no Spring Security context on this service to authorize against, so it
+      # would degrade to this same answer while implying a check that does not exist.
+      show-details: never
 
 logging:
   level:

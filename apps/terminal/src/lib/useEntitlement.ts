@@ -26,6 +26,12 @@ export type Entitlement = {
   licensedAt: string | null;
   maxTerminals: number | null;
   flags: string[];
+  /**
+   * The shop name the cloud returned for this till's token. Null before the first sync, and on a
+   * cloud older than V122. Shown beside the till's own shop name so a token pointing at the wrong
+   * shop is visible on screen rather than discovered in somebody else's ledger.
+   */
+  tenantName: string | null;
 };
 
 /** The capability names the cloud's registry knows. Kept as a union so a typo is a type error. */
