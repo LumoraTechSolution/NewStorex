@@ -14,6 +14,7 @@ import { UpdateNotice } from '@/components/UpdateNotice';
 import { useBackOffice, type Permission } from '@/lib/useBackOffice';
 import { useEntitlement, type Capability } from '@/lib/useEntitlement';
 import { useOperator } from '@/lib/useOperator';
+import { useShopIdentity } from '@/lib/useShopIdentity';
 
 /**
  * The back office (M3-01) — everything the owner does on the shop PC, all of it offline.
@@ -39,12 +40,6 @@ import { useOperator } from '@/lib/useOperator';
  */
 type Section = 'USERS' | 'PRODUCTS' | 'STOCK' | 'CUSTOMERS' | 'REPORTS';
 
-/**
- * The branch this shop PC is. Hardcoded here exactly as it is on the till, and for the same
- * reason: until M5-03's first-run wizard writes it down, there is one branch and inventing a
- * settings mechanism for a single constant would be work that the wizard then replaces.
- */
-const BRANCH_CODE = 'KND';
 
 const SECTIONS: readonly {
   id: Section;
@@ -87,6 +82,12 @@ export default function BackOfficePage() {
   const router = useRouter();
   const office = useBackOffice();
   const operator = useOperator();
+  // The branch this till belongs to, read from the shop the wizard provisioned (M5-03) rather
+  // than hardcoded. It used to be a `const BRANCH_CODE = 'KND'` here, carried over from before
+  // there was a wizard — which meant every shop whose branch code was not KND opened this screen
+  // to `Unknown branch code: KND` and could not see its own stock. The till screen has read it
+  // from here since M5-03; this route simply never followed.
+  const shop = useShopIdentity();
   const { allows } = useEntitlement();
   const [section, setSection] = useState<Section>('USERS');
   /**
@@ -161,6 +162,23 @@ export default function BackOfficePage() {
   }
 
   const active = SECTIONS.find((s) => s.id === section)!;
+
+  // Stock and Reports both query by branch code, and a wrong one is refused by the backend rather
+  // than answered emptily. So the screens wait for the real one instead of being handed a
+  // placeholder: a blank code would turn a clear refusal into an empty list, which reads as "this
+  // shop has no stock" and is a worse lie than an error.
+  if (shop.state.status !== 'ready') {
+    return (
+      <main className="flex h-full items-center justify-center p-8">
+        <p className="text-ink-3 text-sm">
+          {shop.state.status === 'error'
+            ? shop.state.message
+            : "Reading this shop's details…"}
+        </p>
+      </main>
+    );
+  }
+  const branchCode = shop.state.identity.branchCode;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -239,13 +257,13 @@ export default function BackOfficePage() {
           ) : section === 'PRODUCTS' ? (
             <ProductsScreen office={office} />
           ) : section === 'STOCK' ? (
-            <StockScreen office={office} branchCode={BRANCH_CODE} openOnHand={openStockOnHand} />
+            <StockScreen office={office} branchCode={branchCode} openOnHand={openStockOnHand} />
           ) : section === 'CUSTOMERS' ? (
             <CustomersScreen office={office} />
           ) : section === 'REPORTS' ? (
             <ReportsScreen
               office={office}
-              branchCode={BRANCH_CODE}
+              branchCode={branchCode}
               onOpenStock={() => {
                 setOpenStockOnHand(true);
                 setSection('STOCK');
