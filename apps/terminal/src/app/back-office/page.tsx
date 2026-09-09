@@ -40,7 +40,6 @@ import { useShopIdentity } from '@/lib/useShopIdentity';
  */
 type Section = 'USERS' | 'PRODUCTS' | 'STOCK' | 'CUSTOMERS' | 'REPORTS';
 
-
 const SECTIONS: readonly {
   id: Section;
   label: string;
@@ -171,9 +170,7 @@ export default function BackOfficePage() {
     return (
       <main className="flex h-full items-center justify-center p-8">
         <p className="text-ink-3 text-sm">
-          {shop.state.status === 'error'
-            ? shop.state.message
-            : "Reading this shop's details…"}
+          {shop.state.status === 'error' ? shop.state.message : "Reading this shop's details…"}
         </p>
       </main>
     );

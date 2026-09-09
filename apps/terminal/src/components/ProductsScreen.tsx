@@ -1,11 +1,12 @@
 'use client';
 
-import { formatMinor, parseAmountToMinor } from '@lumora/domain';
+import { formatMinor, parseAmountToMinor, suggestedSkuExample } from '@lumora/domain';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { FIELD_CLASS, Labelled, NUMERIC_FIELD_CLASS } from '@/components/Labelled';
 import { ProductImportPanel } from '@/components/ProductImportPanel';
 import type { BackOffice } from '@/lib/useBackOffice';
+import { isScannerTerminator, markCharacterKey } from '@/lib/scanner';
 import { useEntitlement } from '@/lib/useEntitlement';
 
 /**
@@ -105,6 +106,8 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
   const [showRetired, setShowRetired] = useState(false);
   const [editing, setEditing] = useState<ProductRow | null>(null);
   const [adding, setAdding] = useState(false);
+  /** Carried from a scan in the Find box into the blank form it opens. */
+  const [scannedBarcode, setScannedBarcode] = useState<string | null>(null);
   const [managingCategories, setManagingCategories] = useState(false);
   const [importing, setImporting] = useState(false);
   const { allows } = useEntitlement();
@@ -165,6 +168,60 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       );
   }, [products, filter, showRetired]);
 
+  /**
+   * A packet scanned into the Find box (M3-02).
+   *
+   * <p>One motion covers both halves of what an owner is actually doing when they work through a
+   * delivery: most of what they scan is already in the catalogue and they want to check or correct
+   * it, and the rest is new. Making them decide which before they scan means knowing the answer in
+   * advance, which is the thing they picked up the gun to find out.
+   *
+   * <p>The scan is matched against barcodes only, never against name or code. The filter box below
+   * is deliberately looser — a barcode that is a substring of a longer one is a fine thing to
+   * *search* by and a terrible thing to open an editor on. A scan is an exact claim about which
+   * product is in the owner's hand.
+   *
+   * <p>Typing a code and pressing Enter yourself does none of this. `isScannerTerminator` is what
+   * separates them, and an owner typing into a search box has not asked to create anything.
+   */
+  const onFindKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      markCharacterKey(event.nativeEvent);
+      if (event.key !== 'Enter') return;
+
+      // Whatever happens next, this Enter is spent. The field sits inside no form today, but a
+      // scan that submits something is exactly the bug this guard exists to prevent.
+      event.preventDefault();
+      if (!isScannerTerminator(event.nativeEvent)) return;
+
+      const code = event.currentTarget.value.trim();
+      if (code === '') return;
+
+      const match = (products ?? []).find((product) => product.barcodes.includes(code));
+      if (match) {
+        setFilter('');
+        setAdding(false);
+        setEditing(match);
+        setNotice(`${match.name} — scanned.`);
+        return;
+      }
+
+      if (!mayManage) {
+        setError(`No product carries ${code}, and you cannot add one.`);
+        return;
+      }
+
+      // New. The form opens with the code already in it and everything else blank, so the only
+      // thing left is the decision a scanner cannot make: what this is and what it costs.
+      setFilter('');
+      setEditing(null);
+      setScannedBarcode(code);
+      setAdding(true);
+      setNotice(`${code} is not in the catalogue yet. Name it and price it.`);
+    },
+    [products, mayManage],
+  );
+
   const submit = useCallback(
     async (draft: Draft, product: ProductRow | null) => {
       const priceMinor = parseAmountToMinor(draft.price);
@@ -194,7 +251,7 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
 
       const body = JSON.stringify({
         clientUuid: product ? product.clientUuid : crypto.randomUUID(),
-        sku: draft.sku,
+        sku: draft.sku.trim(),
         name: draft.name,
         priceMinor,
         taxMode: draft.taxMode,
@@ -215,6 +272,7 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       if (ok) {
         setAdding(false);
         setEditing(null);
+        setScannedBarcode(null);
       }
     },
     [act, office],
@@ -257,6 +315,9 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
               onClick={() => {
                 setAdding(true);
                 setEditing(null);
+                // A blank form means blank. Without this it would open carrying whatever the
+                // last scan put there, which is a barcode on the wrong product.
+                setScannedBarcode(null);
               }}
               className="border-accent text-accent min-h-touch rounded border px-4"
             >
@@ -325,11 +386,17 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
 
       {adding && mayManage && (
         <ProductForm
-          title="Add a product"
-          initial={BLANK}
+          // Keyed by the scanned code so a second scan, while this form is still open, replaces
+          // the barcode instead of leaving the first one sitting in a mounted field.
+          key={scannedBarcode ?? 'blank'}
+          title={scannedBarcode ? `Add the product carrying ${scannedBarcode}` : 'Add a product'}
+          initial={scannedBarcode ? { ...BLANK, barcodes: [scannedBarcode] } : BLANK}
           categories={categories}
           submitLabel="Create"
-          onCancel={() => setAdding(false)}
+          onCancel={() => {
+            setAdding(false);
+            setScannedBarcode(null);
+          }}
           onSubmit={(draft) => submit(draft, null)}
         />
       )}
@@ -351,10 +418,19 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       )}
 
       <div className="flex flex-wrap items-end gap-4">
-        <Labelled label="Find" hint="name, code, or a barcode">
+        <Labelled
+          label="Find"
+          hint={mayManage ? 'name, code, or scan a packet' : 'name, code, or a barcode'}
+        >
           <input
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={onFindKeyDown}
+            // Nothing helpful may interpose itself between the gun and the field.
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             className={`${FIELD_CLASS} w-72`}
           />
         </Labelled>
@@ -459,6 +535,17 @@ function ProductForm({
 }) {
   const [draft, setDraft] = useState<Draft>(initial);
 
+  /**
+   * What the code box offers when it is empty.
+   *
+   * A placeholder and not a pre-filled value, because only the backend can know the number — and
+   * only at the moment it inserts, since another till may take the next one first. Showing the
+   * shape keeps "leave it blank" honest: the box really is empty, so there is nothing to
+   * accidentally overwrite when the category changes, and nothing to clear before sending.
+   */
+  const categoryName =
+    categories.find((category) => category.id === draft.categoryId)?.name ?? null;
+
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
 
@@ -467,6 +554,35 @@ function ProductForm({
       ...current,
       barcodes: current.barcodes.map((barcode, i) => (i === index ? value : barcode)),
     }));
+
+  /**
+   * A gun finishing a code inside a barcode field.
+   *
+   * <p>This exists because of what Enter means in a form. A scanner ends every code with one, so
+   * without this an owner scanning a second barcode onto a product would submit the product —
+   * saving whatever half-typed price was in the box. That is the same failure the till's scan
+   * field guards against, for the same reason, using the same clock.
+   *
+   * <p>A scan into the last row appends a blank one after it, so scanning three codes onto a
+   * product is three trigger pulls and no clicks.
+   */
+  const onBarcodeKeyDown = (index: number, event: React.KeyboardEvent<HTMLInputElement>) => {
+    markCharacterKey(event.nativeEvent);
+    if (event.key !== 'Enter') return;
+
+    // Spent either way: Enter in a barcode field should never be the submit button, whether a
+    // gun or a person pressed it. The form has a Create button and it is the only way in.
+    event.preventDefault();
+    if (!isScannerTerminator(event.nativeEvent)) return;
+
+    setDraft((current) => {
+      const barcodes = [...current.barcodes];
+      if (index === barcodes.length - 1 && barcodes[index]?.trim() !== '') {
+        barcodes.push('');
+      }
+      return { ...current, barcodes };
+    });
+  };
 
   return (
     <form
@@ -479,12 +595,12 @@ function ProductForm({
       <h3 className="text-ink font-semibold">{title}</h3>
 
       <div className="flex flex-wrap gap-3">
-        <Labelled label="Product code" hint="the shop's own code — a SKU">
+        <Labelled label="Product code" hint="leave it blank and we'll make one">
           <input
             value={draft.sku}
             onChange={(event) => set('sku', event.target.value)}
             maxLength={64}
-            required
+            placeholder={suggestedSkuExample(categoryName)}
             className={NUMERIC_FIELD_CLASS}
           />
         </Labelled>
@@ -585,7 +701,8 @@ function ProductForm({
         <legend className="text-ink-3 text-xs uppercase tracking-wider">Barcodes</legend>
         <p className="text-ink-3 text-xs">
           The first one is the primary. A product may carry several — the manufacturer&apos;s code
-          and a supplier&apos;s own are the same goods, and both have to scan.
+          and a supplier&apos;s own are the same goods, and both have to scan. Scan straight into a
+          box: the next one opens by itself.
         </p>
         {draft.barcodes.map((barcode, index) => (
           // Keyed by position, which is right here: the row's identity *is* its position in the
@@ -596,7 +713,12 @@ function ProductForm({
             <input
               value={barcode}
               onChange={(event) => setBarcode(index, event.target.value)}
+              onKeyDown={(event) => onBarcodeKeyDown(index, event)}
               aria-label={index === 0 ? 'Primary barcode' : `Barcode ${index + 1}`}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               className={`${NUMERIC_FIELD_CLASS} w-64`}
             />
             <button

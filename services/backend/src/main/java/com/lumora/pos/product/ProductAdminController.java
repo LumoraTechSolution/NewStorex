@@ -189,10 +189,16 @@ public class ProductAdminController {
      * <p>{@code priceMinor} is integer minor units and arrives that way. The screen parses what the
      * owner typed with {@code parseAmountToMinor} from {@code @lumora/domain}; a decimal crossing
      * this boundary would be a float somewhere, and 0.29 × 100 is 28.999999999999996.
+     *
+     * <p>{@code sku} carries no {@code @NotBlank}, because blank means two different things and
+     * one record serves both verbs. On a create it is a request to generate one — see {@link
+     * com.lumora.pos.product.ProductSkuAllocator}. On an edit it is still refused, by {@code
+     * requireSku} inside the service, which says so in a sentence rather than as a bean-validation
+     * report.
      */
     public record ProductRequest(
             UUID clientUuid,
-            @NotBlank String sku,
+            String sku,
             @NotBlank String name,
             long priceMinor,
             @NotBlank String taxMode,

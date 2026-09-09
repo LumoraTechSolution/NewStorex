@@ -649,6 +649,136 @@ test.describe('products — M3-02', () => {
   });
 
   /**
+   * Scanning a packet into the back office's Find box (M3-02).
+   *
+   * <h2>Why this is an e2e test and not a unit test</h2>
+   *
+   * The whole feature is a timing distinction. `isScannerTerminator` decides between a gun and a
+   * person by how fast Enter follows the last character, and that is a property of real keystrokes
+   * arriving through a real event loop. A jsdom test would assert on a `timeStamp` it made up
+   * itself, which proves the comparison operator works and nothing about whether a scanner is
+   * recognised.
+   *
+   * <h2>Both halves, because the second depends on the first being wrong</h2>
+   *
+   * A scan either opens a product or offers to create one, and there is exactly one condition
+   * separating them. Testing only the create path would pass just as well if every scan created a
+   * product — including the ones that duplicate something already in the catalogue under a code
+   * the owner has just scanned.
+   */
+  test('scanning a packet in the back office opens the product, or starts a new one', async ({
+    till,
+  }) => {
+    // Keyed on the barcode, not the code. Since the code may be generated, this test no longer
+    // knows it in advance — and a cleanup that guesses leaves rows behind in lumora_local.
+    psql(
+      "DELETE FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+    );
+    psql("DELETE FROM product_barcodes WHERE barcode = '9990000000024'");
+
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    await expect(till.page.getByRole('heading', { name: 'Products' })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    const find = till.page.getByLabel('Find');
+
+    // ---- Half one: a code already in the catalogue opens that product for editing.
+    //
+    // 4791234567890 is seeded (global-setup) and is what the other specs sell.
+    await find.click();
+    await till.page.keyboard.type('4791234567890', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+
+    await expect(till.page.getByRole('status')).toContainText('scanned.', { timeout: 10_000 });
+    // The editor is open on it, not a create form: "Save", not "Create".
+    await expect(till.page.getByRole('button', { name: 'Save' })).toBeVisible();
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- Half two: an unknown code opens a blank form carrying it.
+    await find.click();
+    await till.page.keyboard.type('9990000000024', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+
+    await expect(till.page.getByRole('status')).toContainText('is not in the catalogue yet.', {
+      timeout: 10_000,
+    });
+    // The barcode is already in the form. This is the whole point of the feature: the one thing
+    // the owner cannot be asked to retype is the number they are holding a scanner against.
+    await expect(till.page.getByLabel('Primary barcode')).toHaveValue('9990000000024');
+
+    // The code box is left alone on purpose. A scan already answered the only question a scanner
+    // can answer, and making the owner invent a code before they can save is the friction this
+    // feature exists to remove — so the backend makes one up.
+    await expect(till.page.getByLabel('Product code')).toHaveValue('');
+    await till.page.getByLabel('Name').fill('Scanned Coconut Oil 400ml');
+    await till.page.getByLabel('Price', { exact: true }).fill('7.50');
+    await till.page.getByRole('button', { name: 'Create' }).click();
+
+    await expect(till.page.getByRole('status')).toContainText('is now in the catalogue.', {
+      timeout: 10_000,
+    });
+
+    const generated = scalar(
+      "SELECT sku FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+    );
+    // Uncategorised, so it counts on the neutral prefix rather than an aisle's.
+    expect(generated).toMatch(/^P-\d{4}$/);
+    expect(
+      scalar(
+        "SELECT price_minor FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+      ),
+    ).toBe('750');
+
+    // And it sells. A product created from a scan is a product like any other, or the feature
+    // has only moved the dead end further along.
+    await till.page.getByRole('button', { name: 'Back to the till' }).click();
+    await expect(till.page.locator('#scan')).toBeVisible({ timeout: 10_000 });
+    await scan(till, '9990000000024');
+    await expect(till.page.getByText('Scanned Coconut Oil 400ml')).toBeVisible({ timeout: 10_000 });
+
+    await till.page.keyboard.press('Escape');
+
+    psql(
+      "DELETE FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+    );
+    psql("DELETE FROM product_barcodes WHERE barcode = '9990000000024'");
+  });
+
+  /**
+   * A code the owner types is theirs.
+   *
+   * <p>The generated code exists so nobody has to invent one, not so nobody may. Plenty of shops
+   * already carry supplier codes or shelf labels, and a form that quietly replaced them would be
+   * worse than the one that demanded them.
+   */
+  test('a product code typed by hand is saved exactly as typed', async ({ till }) => {
+    psql("DELETE FROM products WHERE sku = 'E2E-TYPED'");
+
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    await expect(till.page.getByRole('heading', { name: 'Products' })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    await till.page.getByRole('button', { name: 'Add a product' }).click();
+    await till.page.getByLabel('Product code').fill('E2E-TYPED');
+    await till.page.getByLabel('Name').fill('Hand Coded Vinegar 500ml');
+    await till.page.getByLabel('Price', { exact: true }).fill('4.25');
+    await till.page.getByRole('button', { name: 'Create' }).click();
+
+    await expect(till.page.getByRole('status')).toContainText('is now in the catalogue.', {
+      timeout: 10_000,
+    });
+    expect(scalar("SELECT price_minor FROM products WHERE sku = 'E2E-TYPED'")).toBe('425');
+
+    psql("DELETE FROM products WHERE sku = 'E2E-TYPED'");
+  });
+
+  /**
    * A barcode belongs to one product, and the refusal says which.
    *
    * <p>The unique index would refuse this on its own. What is being asserted is that the message

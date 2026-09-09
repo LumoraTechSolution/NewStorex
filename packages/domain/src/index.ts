@@ -23,6 +23,7 @@
  * | `refund.ts`   | partial-return apportionment, refund tender rules          | M2-06 |
  * | `csv.ts`      | reading a product list out of a spreadsheet                | M3-03 |
  * | `stock.ts`    | adjustment reasons, their direction, on hand as a sum      | M3-05 |
+ * | `sku.ts`      | a product code's prefix, derived from its category         | M3-02 |
  *
  * The invariants these uphold are stated once, in `cart.ts`, because they are the
  * contract the backend's checksum enforces. Property-based tests in `cart.test.ts` assert
@@ -38,3 +39,4 @@ export * from './cashup';
 export * from './refund';
 export * from './csv';
 export * from './stock';
+export * from './sku';

@@ -1,6 +1,6 @@
 # Lumora POS — Build Roadmap
 
-> **Current position:** **M5 is out of code and M6 is out of tasks; what is left in both needs a person.** `M5-06` put a shop's whole database somewhere other than the shop: the till uploads its verified `pg_dump` once a day — not twice, because the local copy is free and this one crosses somebody's mobile data — and the cloud recomputes the SHA-256 from what actually arrived, deleting anything it cannot vouch for. The storage decision had to be **asked rather than assumed**: the obvious implementation writes to the cloud host's filesystem, which Render recreates on every deploy, so every archive would have evaporated at the next release while the till was told everything was fine. **Cloudflare R2**, chosen 2026-09-01; the bucket and its five variables are a deployment step nobody has performed yet. `M5-10` settled what erasure means when a shop must keep its accounts: **anonymisation** — the personal fields are destroyed, the row keeps its id, and a Z-report printed last week still reconciles. An issued tax invoice keeps what it was printed with, because the buyer filed it. `M5-11` is **built and deliberately switched off**: an update channel is remote code execution on every till, so it refuses to run on a build that is not code-signed, and there is no certificate. There is also **no restart-now button anywhere in the renderer or the bridge** — an update lands when the shop closes StoreX and at no other moment. Then the five owner-console tasks the 30 August conversation asked for. `M6-10` fixed the sharpest thing on that list — _eleven attentions and nothing to do about them_ — with a table rather than a boolean, because a shift is a synced aggregate and the next delivery would have silently un-reviewed it; reviewed is **not gone**, which is what makes the button safe to press. It is also the **console's first and only write**, a widening narrow enough to state in a sentence. `M6-11` gave the shift history a date range and a keyset cursor — `OFFSET` is wrong here rather than slow, and the failure is a shift counted twice in a list being reconciled against a drawer. `M6-12` built the stock half `ConsoleReportService` has been admitting was missing since M4-07, still `Σ movements` on both tiers, still refusing to confuse a blank reorder point with a zero. `M6-13` finally put a **person** on a cloud shift, carrying both the uuid and a name snapshot because shifts and users drain through one outbox with no ordering between them. `M6-14` **is now the console**, not a prototype beside it: the hero is not a number but _is the shop open, who is on the till, did anything just happen_ — with the takings priced against a normal one of this weekday by this hour, and the pulse drawing today against that same normal day across the trading hours. **526 backend, 170 domain, 102 terminal, 41 console tests green.** **Still needing a person: the R2 bucket, a code-signing certificate, `M5-05`'s restore run against the real installer, `M5-12`'s pilot month — and Gates M1, M2, M3 and M6, every one of which has been outstanding since before any of this.**
+> **Current position:** **M5 is out of code and M6 is out of tasks; what is left in both needs a person.** `M5-06` put a shop's whole database somewhere other than the shop: the till uploads its verified `pg_dump` once a day — not twice, because the local copy is free and this one crosses somebody's mobile data — and the cloud recomputes the SHA-256 from what actually arrived, deleting anything it cannot vouch for. The storage decision had to be **asked rather than assumed**: the obvious implementation writes to the cloud host's filesystem, which Render recreates on every deploy, so every archive would have evaporated at the next release while the till was told everything was fine. **Cloudflare R2**, chosen 2026-09-01; the bucket and its five variables are a deployment step nobody has performed yet. `M5-10` settled what erasure means when a shop must keep its accounts: **anonymisation** — the personal fields are destroyed, the row keeps its id, and a Z-report printed last week still reconciles. An issued tax invoice keeps what it was printed with, because the buyer filed it. `M5-11` is **built and deliberately switched off**: an update channel is remote code execution on every till, so it refuses to run on a build that is not code-signed, and there is no certificate. There is also **no restart-now button anywhere in the renderer or the bridge** — an update lands when the shop closes StoreX and at no other moment. Then the five owner-console tasks the 30 August conversation asked for. `M6-10` fixed the sharpest thing on that list — _eleven attentions and nothing to do about them_ — with a table rather than a boolean, because a shift is a synced aggregate and the next delivery would have silently un-reviewed it; reviewed is **not gone**, which is what makes the button safe to press. It is also the **console's first and only write**, a widening narrow enough to state in a sentence. `M6-11` gave the shift history a date range and a keyset cursor — `OFFSET` is wrong here rather than slow, and the failure is a shift counted twice in a list being reconciled against a drawer. `M6-12` built the stock half `ConsoleReportService` has been admitting was missing since M4-07, still `Σ movements` on both tiers, still refusing to confuse a blank reorder point with a zero. `M6-13` finally put a **person** on a cloud shift, carrying both the uuid and a name snapshot because shifts and users drain through one outbox with no ordering between them. `M6-14` **is now the console**, not a prototype beside it: the hero is not a number but _is the shop open, who is on the till, did anything just happen_ — with the takings priced against a normal one of this weekday by this hour, and the pulse drawing today against that same normal day across the trading hours. **551 backend, 189 domain, 102 terminal, 41 console tests green.** `M6-15` made the product code optional — generated from the category when it is left blank, and untouched when it is typed — after finding that the obvious `max(sku)` implementation reissues codes whenever a product is renamed, because `save` rewrites the code and nothing here is ever deleted. `M6-16` closed the dead end an unknown scan used to be: scanning a packet into the back office either opens the product carrying that code or starts a new one with the code already filled in — kept **out of the till**, because a create there either interrupts a queue for a PIN or lets anyone at the counter invent an unpriced product. **Still needing a person: the R2 bucket, a code-signing certificate, `M5-05`'s restore run against the real installer, `M5-12`'s pilot month — and Gates M1, M2, M3 and M6, every one of which has been outstanding since before any of this.**
 
 **Source of truth for design:** [Building Lumora POS — Development Guide](https://claude.ai/code/artifact/c2c24386-6677-440a-a989-cf4d83ff8ff8). This roadmap is the _execution_ document; the guide is the _design_ document. When they conflict, the guide wins on design and this file wins on sequencing. Revise both when decisions change rather than letting the code drift.
 
@@ -276,6 +276,10 @@ Inserted before M5 deliberately. The installer packages a UI, and a pilot shop t
 - [x] **M6-13** End of day by cashier — who was on the till, and what they took <sub>done 2026-09-01</sub> — the shift payload now carries `openedBy`/`closedBy` as **both a uuid and a name**: the uuid joins to the synced user and survives a rename, the name is what the console shows while that user has not arrived yet, because shifts and users drain through one outbox with no ordering between them. `V215` on the cloud, nullable **permanently** for every shift already up there — a closed shift is never redelivered, so "not recorded" is the truth rather than a gap to backfill. Attribution goes through `shift_client_uuid`, never through the sale: the person is a property of the shift, which is what M2 made the unit of accountability. Grouped by person rather than by shift, with the shift count as the visible trace of a handover, and the **variance rides along** because takings and drawer accuracy are one conversation. 9 tests. See §G
 - [x] **M6-14** The owner console, redesigned <sub>prototype 2026-09-01, built 2026-09-03</sub> — the prototype was approved and is now the console. The **hero is not a number**: the first line says _Open · Nimal Perera on the till since 9:04 am · last sale 6 minutes ago_, and the takings under it are **priced against a normal one of this weekday by this hour** rather than standing alone. The signature is **the pulse** — today and a normal Thursday as two profiles facing each other across the trading day, binned to the quarter hour, drawn on **one scale** because two would make a quiet day look like a busy one. `PulseSlot` gained `usualTotalMinor` so the sentence over the graphic is computed from the same array the graphic draws. Type is Fraunces for money, Archivo for the interface, IBM Plex Mono for codes, **self-hosted** — `font-src 'self'` is our own CSP and a typeface is not worth widening it for. The ground is a warm neutral with a green cast, scoped to the console so the till is untouched. 26 new tests. See §G
 
+- [x] **M6-15** A product code the shop does not have to invent <sub>done 2026-09-09</sub> — the code field is optional now. Left blank it is generated from the product's category — `BEV-001`, `BEV-002`, and `P-0001` for anything uncategorised — and a code typed by hand is saved untouched, because plenty of shops already carry supplier codes. `V124` adds a counter table rather than deriving the number from `max(sku)`, and **the reason is not concurrency alone**: `save` rewrites a product's code, so a rename removes the highest number in a prefix with no delete involved, and the next create silently reissues a code already on a shelf label. The form shows the shape as a **placeholder, never a value** — only the backend can know the number, and only at the moment it inserts. Blank stays refused on an edit and on CSV import, both because the code is the key an import merges on. 14 new tests. See §G
+
+- [x] **M6-16** Adding a product by scanning it <sub>done 2026-09-09</sub> — an unknown barcode used to be a dead end: the till said _No product for barcode 4791234567890_ and the owner, holding the packet, had nothing to do with either the code or the goods. Scanning into the back office's **Find** box now does whichever of two things is true — opens the product carrying that code, or opens a blank product form with the code already in it. One motion, because working through a delivery means not knowing in advance which packets are new. The barcode fields on the form take a scan too, appending the next blank row, so three codes on one product is three trigger pulls. Creation stayed in the **back office and not the till**: the till's alternative needs a `MANAGE_PRODUCTS` PIN with a customer waiting, so it would either go unused or be quietly bypassed, and a product invented mid-queue is one nobody priced. 1 new e2e test. See §G
+
 > **⛔ Gate M6** — A cashier completes a full sale **without touching the keyboard**, and another **without touching the screen**, on the same till.
 >
 > - [ ] **GATE-M6** executed and passed
@@ -374,6 +378,111 @@ Run every item before every release, not once per milestone.
 ---
 
 ## §G — Progress log
+
+### M6-16 — scanning a packet into the catalogue, and why not at the till
+
+An unknown scan was a dead end. `page.tsx` answered it with _No product for barcode ..._ and stopped
+there, which is the one moment the shop has both the goods and the code in hand and can least afford
+to be told to go and type them in somewhere else.
+
+**Three placements were offered and the till was deliberately not chosen.** Creating a product from
+the till is genuinely useful in a shop where the owner is the cashier, and wrong everywhere else:
+this system already separates `MANAGE_PRODUCTS` from `BACK_OFFICE`, so a till-side create either
+demands a PIN with a customer waiting — which means nobody uses it — or bypasses the permission that
+exists to stop anyone at the counter inventing catalogue entries. The failure is not hypothetical
+mischief but ordinary haste: a misspelled name, a guessed price, a duplicate of something already
+stocked under a different code. The back office was chosen, and the till's refusal stands.
+
+**A scan does one of two things and never asks which.** Most of what an owner scans while booking in
+a delivery is already in the catalogue; the rest is new, and which is which is the thing they picked
+the gun up to find out. A known code opens that product for editing. An unknown one opens the create
+form with the barcode pre-filled, leaving only the decision a scanner cannot make — what this is and
+what it costs. Nothing is ever created without a price being typed.
+
+**The match is exact, against barcodes only.** The Find box's own filter is deliberately looser: it
+matches name, code and any barcode by substring, which is right for searching and wrong for opening
+an editor, because a short code that is a fragment of a longer one would open the wrong product. A
+scan is an exact claim about the packet in somebody's hand and is treated as one.
+
+**Enter is the whole feature, and it is also the hazard.** A gun ends every code with Enter, so the
+same `isScannerTerminator` clock the till has used since M1-09 decides whether a person or a scanner
+pressed it — an owner typing a code into a search box has not asked to create anything. Inside the
+form the danger is sharper: without a guard, scanning a second barcode onto a product **submits the
+product**, saving a half-typed price. Enter in a barcode field is therefore spent unconditionally,
+gun or not; the form has a Create button and it is the only way in.
+
+**Verified in the real window.** The distinction being tested is a timing one, so a jsdom test would
+assert against a `timeStamp` it invented itself and prove nothing about whether a scanner is
+recognised. The new e2e spec scans a seeded code and expects the editor, scans an unknown one and
+expects a pre-filled create form, then sells the product it just made. 55 e2e green, 551 backend,
+332 unit.
+
+**Two breakages in unrelated in-flight work were fixed to get a green run**, both in M6-15's files:
+an `eqeqeq` lint error in `sku.ts` and two invalid Java escapes (`"BEV-\d{3}"` needs `\\d`) in
+`ProductAdminTest`, which stopped the backend compiling outright.
+
+### M6-15 — the product code, and why a counter table beat the obvious query
+
+The ask was to stop making people type a product code, and the first proposal was to build one from
+the first three letters of the category **and** the product name — `Beverages` + `Coca Cola` giving
+`BEVCOC`. It was rejected before any code was written, for three reasons worth keeping. Variants
+collide on day one, because `Coca Cola 500ml` and `Coca Cola 1L` produce the same six letters.
+Category is nullable on purpose, so there is often nothing to take the first half from. And the
+code would change whenever a product was renamed — which matters far more than it looks, because
+**the code is the key `ProductImportService` merges a CSV on**. A shop that renamed a product and
+re-imported its spreadsheet would get a second copy of everything it had touched.
+
+**The generated shape is `PREFIX-NNN`, and the prefix comes only from the category.** One source,
+not two, so a rename never moves it. Prefixes are allowed to collide — `Beverages` and `Beverage`
+both give `BEV` and share a counter — because the alternative, disambiguating to `BEV2`, makes
+renaming an aisle change the prefix of everything filed afterwards and leaves one shelf with two
+prefixes forever. The prefix is a hint, not a key.
+
+**Uncategorised products count on `P-0001`, deliberately not `GEN-001`.** `V110` argues at length
+that a product's category is nullable so a shop is not pushed into inventing a single bucket called
+"General" and putting everything in it. `GEN` is that bucket again, in a namespace where renaming
+400 rows would break every one of their CSV imports. A Sinhala or Tamil category name strips to no
+Latin characters and falls in with the uncategorised, which is a real limitation and is accepted:
+the codes stay unique and typeable, and giving each category an optional prefix of its own is the
+fix if a shop ever asks for it.
+
+**The interesting part is why the counter is a table.** The obvious implementation is
+`SELECT max(sku) ... WHERE sku LIKE 'BEV-%'`, and the obvious objection is concurrency — two tills
+both read 2 and both write `BEV-003`. That objection is real but it is not the load-bearing one.
+`ProductAdminService.save` writes `SET sku = ?`: **a product's code is mutable, so a rename removes
+the highest number in a prefix without any delete being involved**, and there is no product delete
+in this system at all. After that rename the next create reissues a code the shop may already have
+printed on a shelf label. The unique index cannot catch it, because the first holder is genuinely
+gone. A counter table closes both holes for the cost of one migration.
+
+It also could not have been fixed with a retry. `create` is `@Transactional`, and a constraint
+violation aborts the Postgres transaction — the same thing `CashMovementService` and `RefundService`
+both already record about `client_uuid`. There is nothing left to read the winner back with, so
+catching the duplicate and trying again is not available here.
+
+**Gaps in the sequence are intentional.** A retried create burns a number before it reaches the
+`client_uuid` conflict, so `BEV-001` may be followed by `BEV-003`. Nothing audits a product code the
+way an auditor reads invoice numbers, so this is a correct catalogue. The e2e run leaves the `P`
+counter advanced for exactly this reason, in the same spirit as `invoice_counters`.
+
+**The form shows a placeholder, never a pre-filled value.** Only the backend can know the number,
+and only at the moment it inserts, since another till may take the next one first. A pre-filled box
+would need a "has the owner typed yet?" flag, would have to be cleared before sending so the server
+could tell an accepted suggestion from a deliberate override, and would still sometimes display a
+number that did not survive the round-trip. An empty box with a grey `BEV-001` behind it needs none
+of that, and makes "leave it blank" literally true.
+
+**Blank means two different things and only one of them is generous.** On a create it is a request
+to make one up. On an edit it stays refused, and on CSV import it stays the error it always was —
+both because the code is the merge key, and a reprice that quietly regenerated it would turn the
+shop's next import into a pile of duplicates. `ProductRequest` therefore lost its `@NotBlank` on
+`sku`, since one record serves both verbs; `requireSku` inside `save` still refuses blank, with a
+sentence rather than a bean-validation report.
+
+**Verified beyond the suite.** The concurrency claim is the one thing a `@Transactional`
+rollback-per-test harness cannot demonstrate, so it was checked by hand with two `psql` sessions:
+the second blocked for 3.1 s on the first's row lock and then returned 2, not 1. 551 backend tests
+green, 55 e2e green in the real Electron window, and the e2e catalogue left clean.
 
 ### M6-14 — a prototype, and the argument that the hero is not a number
 

@@ -527,4 +527,27 @@ class ProductImportTest {
         assertThat(admin.byId(shop.tenantId(), existing.id()).active()).isTrue();
         assertThat(admin.byId(shop.tenantId(), existing.id()).name()).isEqualTo("Not In The File");
     }
+
+    /**
+     * Import never makes up a code, even though the back-office form now does.
+     *
+     * <p>The code is the key this service merges on, so a generated one would make every re-import
+     * of the same file create a second copy of the row instead of updating it — and the plan hash
+     * is computed over the codes, so a preview could not name what the apply was about to write.
+     * A blank cell stays an error the shopkeeper fixes in their spreadsheet.
+     */
+    @Test
+    void aRowWithNoCodeIsStillRefusedRatherThanGivenOne() {
+        Shop shop = fixtures.seed();
+
+        ImportPlan plan = imports.plan(shop.tenantId(), List.of(row(1, "", "Nutmeg 50g", 42_000)));
+
+        assertThat(plan.rows())
+                .singleElement()
+                .satisfies(
+                        line -> {
+                            assertThat(line.action()).isEqualTo(Action.ERROR);
+                            assertThat(line.problem()).isEqualTo("No product code.");
+                        });
+    }
 }

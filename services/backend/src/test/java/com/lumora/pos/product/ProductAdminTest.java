@@ -389,4 +389,135 @@ class ProductAdminTest {
                 .singleElement()
                 .satisfies(row -> assertThat(row.productCount()).isEqualTo(1));
     }
+
+    // -------------------------------------------------------------------- codes we make up
+
+    /**
+     * The point of the whole feature: an owner adding a product does not have to invent a code for
+     * it. What comes back has to be a real code — unique, and findable by the same search a
+     * cashier uses.
+     */
+    @Test
+    void aProductCreatedWithNoCodeGetsOneFromItsCategory() {
+        Shop shop = fixtures.seed();
+        CategoryRow beverages =
+                admin.createCategory(shop.tenantId(), UUID.randomUUID(), unique("Beverages"));
+
+        ProductRow created =
+                admin.create(shop.tenantId(), inCategory("", "Ginger Beer 500ml", 32_000, beverages.id()));
+
+        assertThat(created.sku()).matches("BEV-\\d{3}");
+        assertThat(lookup.search(created.sku(), 5))
+                .extracting(ProductSummary::clientUuid)
+                .contains(created.clientUuid());
+    }
+
+    @Test
+    void twoProductsInOneCategoryGetConsecutiveCodes() {
+        Shop shop = fixtures.seed();
+        CategoryRow category =
+                admin.createCategory(shop.tenantId(), UUID.randomUUID(), unique("Hardware"));
+
+        ProductRow first = admin.create(shop.tenantId(), inCategory("", "Hinge", 45_000, category.id()));
+        ProductRow second = admin.create(shop.tenantId(), inCategory("", "Latch", 51_000, category.id()));
+
+        assertThat(number(second.sku())).isEqualTo(number(first.sku()) + 1);
+    }
+
+    /**
+     * Not GEN-001. V110 keeps the category nullable so a shop is not pushed into inventing one
+     * bucket called "General", and a code namespace full of GEN is that bucket again.
+     */
+    @Test
+    void aProductWithNoCategoryGetsTheNeutralPrefix() {
+        Shop shop = fixtures.seed();
+
+        ProductRow created = admin.create(shop.tenantId(), draft("", "Loose Screws", 1_500));
+
+        assertThat(created.sku()).matches("P-\\d{4}");
+    }
+
+    /**
+     * The one that catches an implementation which allocates first and throws the number away: a
+     * typed code must not quietly consume one, or an owner who names every product by hand would
+     * still be advancing a counter they never use.
+     */
+    @Test
+    void aTypedCodeIsUsedAsTypedAndCostsNothingFromTheCounter() {
+        Shop shop = fixtures.seed();
+        CategoryRow category =
+                admin.createCategory(shop.tenantId(), UUID.randomUUID(), unique("Bakery"));
+        String mine = unique("MY-OWN");
+
+        ProductRow created =
+                admin.create(shop.tenantId(), inCategory(mine, "Seeded Loaf", 42_000, category.id()));
+
+        assertThat(created.sku()).isEqualTo(mine);
+        assertThat(counterFor(shop.tenantId(), "BAK")).isNull();
+    }
+
+    /** Blank is only a request on a create. An edit that regenerated would move the key a CSV
+     * re-import merges on, so a reprice would start duplicating products. */
+    @Test
+    void aBlankCodeOnAnEditIsStillRefused() {
+        Shop shop = fixtures.seed();
+        ProductRow product = admin.create(shop.tenantId(), draft(unique("SKU"), "Table Salt 1kg", 9_000));
+
+        assertThatThrownBy(
+                        () ->
+                                admin.save(
+                                        shop.tenantId(),
+                                        product.id(),
+                                        draft("", "Table Salt 1kg", 9_000)))
+                .isInstanceOf(RejectedException.class)
+                .hasMessageContaining("needs a code");
+    }
+
+    /**
+     * A generated code can land on one an owner typed by hand months earlier. That has to come back
+     * as the sentence the screen already shows for a duplicate, not as a constraint violation.
+     */
+    @Test
+    void aGeneratedCodeThatMeetsATypedOneIsRefusedInWords() {
+        Shop shop = fixtures.seed();
+        CategoryRow category =
+                admin.createCategory(shop.tenantId(), UUID.randomUUID(), unique("Cleaning"));
+
+        // Take the code the counter is about to hand out, by hand, before it does.
+        admin.create(shop.tenantId(), inCategory("CLE-001", "Bleach 1L", 26_000, category.id()));
+
+        assertThatThrownBy(
+                        () ->
+                                admin.create(
+                                        shop.tenantId(),
+                                        inCategory("", "Floor Cleaner 1L", 38_000, category.id())))
+                .isInstanceOf(RejectedException.class)
+                .hasMessageContaining("already used");
+    }
+
+    private static ProductDraft inCategory(String sku, String name, long priceMinor, long categoryId) {
+        return new ProductDraft(
+                UUID.randomUUID(),
+                sku,
+                name,
+                priceMinor,
+                "INCLUSIVE",
+                1800,
+                categoryId,
+                List.of(),
+                null);
+    }
+
+    private static int number(String sku) {
+        return Integer.parseInt(sku.substring(sku.lastIndexOf('-') + 1));
+    }
+
+    /** Null when the prefix has never been allocated from. */
+    private Long counterFor(long tenantId, String prefix) {
+        return jdbc.queryForObject(
+                "SELECT max(next_seq) FROM product_sku_counters WHERE tenant_id = ? AND prefix = ?",
+                Long.class,
+                tenantId,
+                prefix);
+    }
 }
