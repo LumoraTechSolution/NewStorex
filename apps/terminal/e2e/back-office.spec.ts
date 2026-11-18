@@ -752,6 +752,110 @@ test.describe('products — M3-02', () => {
   });
 
   /**
+   * Suggestions under the Find box (M6-17).
+   *
+   * <p>Three ways in, and one way that must not be a way in: arrow + Enter and a click both open
+   * the product, while arrowing onto a suggestion and then clicking elsewhere must not. That last
+   * one is downshift's default — it picks the highlighted item on blur — and it is overridden in
+   * ProductsScreen, so this is what notices if the override is ever lost.
+   */
+  test('typing in Find suggests products, and picking one opens it', async ({ till }) => {
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    const heading = till.page.getByRole('heading', { name: 'Products' });
+    await expect(heading).toBeVisible({ timeout: 10_000 });
+
+    const find = till.page.getByLabel('Find');
+    const tea = till.page.getByRole('option', { name: /Ceylon Tea 400g/ });
+
+    // ---- Arrow and Enter.
+    await find.click();
+    await till.page.keyboard.type('ceylon tea 4');
+    await expect(tea).toBeVisible();
+    await till.page.keyboard.press('ArrowDown');
+    await till.page.keyboard.press('Enter');
+    await expect(till.page.getByRole('button', { name: 'Save' })).toBeVisible();
+    await expect(till.page.getByLabel('Name')).toHaveValue('Ceylon Tea 400g');
+    // The pick opened the product; it did not leave the list filtered down behind the form.
+    await expect(find).toHaveValue('');
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- A click.
+    await find.click();
+    await till.page.keyboard.type('ceylon');
+    await tea.click();
+    await expect(till.page.getByRole('button', { name: 'Save' })).toBeVisible();
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- Highlighted, then clicked away from: nothing opens.
+    await find.click();
+    await till.page.keyboard.type('ceylon');
+    await expect(tea).toBeVisible();
+    await till.page.keyboard.press('ArrowDown');
+    await heading.click();
+    await expect(tea).toBeHidden();
+    await expect(till.page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+  });
+
+  /**
+   * A scan with nothing focused (M6-18).
+   *
+   * <p>Clicking the heading leaves focus on the page itself, which is where it is after the owner
+   * clicks any button that then goes away — Cancel, most often. That is the state in which a scan
+   * used to vanish.
+   */
+  test('a scan with no field focused still opens the product, or starts a new one', async ({
+    till,
+  }) => {
+    psql(
+      "DELETE FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000031')",
+    );
+    psql("DELETE FROM product_barcodes WHERE barcode = '9990000000031'");
+
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    const heading = till.page.getByRole('heading', { name: 'Products' });
+    await expect(heading).toBeVisible({ timeout: 10_000 });
+
+    // ---- Known: opens it.
+    await heading.click();
+    await till.page.keyboard.type('4791234567890', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+    await expect(till.page.getByRole('status')).toContainText('scanned.', { timeout: 10_000 });
+    await expect(till.page.getByLabel('Name')).toHaveValue('Ceylon Tea 400g');
+
+    // ---- With a form open: refused, and the form is left as it was.
+    await till.page.getByLabel('Name').fill('Ceylon Tea 400g — half-typed');
+    await heading.click();
+    await till.page.keyboard.type('9990000000031', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+    await expect(alert(till)).toContainText('Finish or cancel this product first');
+    await expect(till.page.getByLabel('Name')).toHaveValue('Ceylon Tea 400g — half-typed');
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- Unknown, after Cancel took focus with it: a blank form carrying the code.
+    await till.page.keyboard.type('9990000000031', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+    await expect(till.page.getByRole('status')).toContainText('is not in the catalogue yet.', {
+      timeout: 10_000,
+    });
+    await expect(till.page.getByLabel('Primary barcode')).toHaveValue('9990000000031');
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // Nothing was saved along the way.
+    expect(scalar("SELECT count(*) FROM product_barcodes WHERE barcode = '9990000000031'")).toBe(
+      '0',
+    );
+    expect(
+      scalar(
+        "SELECT p.name FROM products p JOIN product_barcodes b ON b.product_id = p.id WHERE b.barcode = '4791234567890'",
+      ),
+    ).toBe('Ceylon Tea 400g');
+  });
+
+  /**
    * A code the owner types is theirs.
    *
    * <p>The generated code exists so nobody has to invent one, not so nobody may. Plenty of shops

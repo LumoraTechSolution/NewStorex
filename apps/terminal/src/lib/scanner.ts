@@ -48,6 +48,100 @@ export function isScannerTerminator(event: KeyboardEvent): boolean {
   return now - lastCharacterAt < SCANNER_TERMINATOR_WINDOW_MS;
 }
 
+/** Shorter than any barcode in use (EAN-8 is the shortest) and longer than a fumbled keypress. */
+export const MIN_SCAN_LENGTH = 4;
+
+/**
+ * Collects a scan that arrives with no text field focused (M6-18).
+ *
+ * <p>In a field, the field holds the characters and only the Enter needs judging. With focus on a
+ * button or the page itself the characters go nowhere, so they have to be caught on the way past.
+ * The rule is the same 60ms one, applied to every gap rather than just the last: a character after
+ * a longer pause starts a new code, so a person tapping keys never accumulates one.
+ *
+ * <p>Pure — timestamps are passed in — so the timing rule is testable without a DOM.
+ */
+export class ScanBuffer {
+  private chars = '';
+  private lastAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * Feeds one keypress. Returns the code when this key is the Enter that ends a scan, else null.
+   *
+   * @param key `KeyboardEvent.key` of a printable character or Enter; anything else (Shift, which
+   *     some scanners send before letters) is ignored without breaking the run.
+   */
+  push(key: string, at: number): string | null {
+    const fresh = at - this.lastAt < SCANNER_TERMINATOR_WINDOW_MS;
+
+    if (key === 'Enter') {
+      const code = fresh && this.chars.length >= MIN_SCAN_LENGTH ? this.chars : null;
+      this.reset();
+      return code;
+    }
+    if (key.length !== 1) return null;
+
+    this.chars = fresh ? this.chars + key : key;
+    this.lastAt = at;
+    return null;
+  }
+
+  reset(): void {
+    this.chars = '';
+    this.lastAt = Number.NEGATIVE_INFINITY;
+  }
+}
+
+/** Where a scan already has a home: the element will take the characters itself. */
+function isTextEntry(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  );
+}
+
+/**
+ * Calls `onScan` with a code scanned while no text field has focus (M6-18).
+ *
+ * <p>A scan into a field is left alone — that field already decides what a scan means there (the
+ * Find box opens the product, a barcode field in the form adds a row). This only catches the scans
+ * that would otherwise be lost, because the owner last clicked a button.
+ *
+ * <p>The ending Enter is swallowed. Focus is usually still on whatever was clicked last, and an
+ * Enter reaching a focused "Discontinue" button presses it.
+ */
+export function useScanAnywhere(onScan: (code: string) => void): void {
+  const latest = useRef(onScan);
+  latest.current = onScan;
+
+  useEffect(() => {
+    const buffer = new ScanBuffer();
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (isTextEntry(event.target)) {
+        buffer.reset();
+        return;
+      }
+      if (event.ctrlKey || event.altKey || event.metaKey) {
+        buffer.reset();
+        return;
+      }
+      const code = buffer.push(event.key, event.timeStamp || performance.now());
+      if (code === null) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      latest.current(code);
+    }
+
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, []);
+}
+
 export type KeyBinding = {
   /** Function keys, or a plain letter with {@link ctrl}. See the note above on plain digits. */
   key: string;

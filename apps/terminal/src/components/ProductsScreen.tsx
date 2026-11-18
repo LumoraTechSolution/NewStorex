@@ -1,12 +1,14 @@
 'use client';
 
 import { formatMinor, parseAmountToMinor, suggestedSkuExample } from '@lumora/domain';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCombobox } from 'downshift';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { FIELD_CLASS, Labelled, NUMERIC_FIELD_CLASS } from '@/components/Labelled';
 import { ProductImportPanel } from '@/components/ProductImportPanel';
+import { rankProducts } from '@/lib/productSearch';
 import type { BackOffice } from '@/lib/useBackOffice';
-import { isScannerTerminator, markCharacterKey } from '@/lib/scanner';
+import { isScannerTerminator, markCharacterKey, useScanAnywhere } from '@/lib/scanner';
 import { useEntitlement } from '@/lib/useEntitlement';
 
 /**
@@ -83,6 +85,9 @@ const BLANK: Draft = {
   reorderPoint: '',
   barcodes: [''],
 };
+
+/** Keys that move through the suggestions. A person presses these; a scanner never does. */
+const NAVIGATION_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
 
 function toDraft(product: ProductRow): Draft {
   return {
@@ -169,7 +174,7 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
   }, [products, filter, showRetired]);
 
   /**
-   * A packet scanned into the Find box (M3-02).
+   * A packet scanned on this screen — into the Find box (M6-16) or anywhere else (M6-18).
    *
    * <p>One motion covers both halves of what an owner is actually doing when they work through a
    * delivery: most of what they scan is already in the catalogue and they want to check or correct
@@ -180,23 +185,9 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
    * is deliberately looser — a barcode that is a substring of a longer one is a fine thing to
    * *search* by and a terrible thing to open an editor on. A scan is an exact claim about which
    * product is in the owner's hand.
-   *
-   * <p>Typing a code and pressing Enter yourself does none of this. `isScannerTerminator` is what
-   * separates them, and an owner typing into a search box has not asked to create anything.
    */
-  const onFindKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLInputElement>) => {
-      markCharacterKey(event.nativeEvent);
-      if (event.key !== 'Enter') return;
-
-      // Whatever happens next, this Enter is spent. The field sits inside no form today, but a
-      // scan that submits something is exactly the bug this guard exists to prevent.
-      event.preventDefault();
-      if (!isScannerTerminator(event.nativeEvent)) return;
-
-      const code = event.currentTarget.value.trim();
-      if (code === '') return;
-
+  const handleScannedCode = useCallback(
+    (code: string) => {
       const match = (products ?? []).find((product) => product.barcodes.includes(code));
       if (match) {
         setFilter('');
@@ -220,6 +211,122 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       setNotice(`${code} is not in the catalogue yet. Name it and price it.`);
     },
     [products, mayManage],
+  );
+
+  /**
+   * A scan with no text field focused (M6-18) — the owner last clicked a button, or nothing.
+   *
+   * <p>Refused while a product form is open. The owner may be halfway through typing a price, and
+   * a scan that swapped the form for another product would throw that away without a word. A scan
+   * into one of the form's own barcode fields still works; that field has focus, so this never
+   * sees it.
+   */
+  useScanAnywhere((code) => {
+    if (adding || editing) {
+      setNotice(null);
+      setError(`Finish or cancel this product first, then scan ${code} again.`);
+      return;
+    }
+    setError(null);
+    handleScannedCode(code);
+  });
+
+  /**
+   * Suggestions under the Find box (M6-17). The list below still filters on the same text; this is
+   * the short version, ranked, for an owner who knows which one they want and only needs to reach
+   * it. Picking one opens it — or, for someone who may only look, narrows the list to it.
+   */
+  const suggestions = useMemo(
+    () =>
+      rankProducts(
+        (products ?? []).filter((product) => showRetired || product.active),
+        filter,
+      ),
+    [products, filter, showRetired],
+  );
+
+  const openProduct = useCallback(
+    (product: ProductRow) => {
+      if (!mayManage) {
+        // The code is unique, so this leaves exactly the one row.
+        setFilter(product.sku);
+        return;
+      }
+      setFilter('');
+      setAdding(false);
+      setEditing(product);
+    },
+    [mayManage],
+  );
+
+  const {
+    isOpen,
+    highlightedIndex,
+    getLabelProps,
+    getInputProps,
+    getMenuProps,
+    getItemProps,
+    closeMenu,
+  } = useCombobox<ProductRow>({
+    items: suggestions,
+    inputValue: filter,
+    // Always nothing selected, so picking the same product twice still counts as a pick.
+    selectedItem: null,
+    itemToString: (product) => product?.name ?? '',
+    onInputValueChange: ({ inputValue }) => setFilter(inputValue ?? ''),
+    onSelectedItemChange: ({ selectedItem }) => {
+      if (selectedItem) openProduct(selectedItem);
+    },
+    stateReducer: (state, { type, changes }) => {
+      switch (type) {
+        // A pick opens the product; it does not write the product's name into the box, which
+        // would leave the list filtered down to it behind the open form.
+        case useCombobox.stateChangeTypes.InputKeyDownEnter:
+        case useCombobox.stateChangeTypes.ItemClick:
+          return { ...changes, inputValue: state.inputValue, isOpen: false };
+        // Downshift picks whatever is highlighted when the box loses focus. Clicking away is not
+        // a decision to open a product.
+        case useCombobox.stateChangeTypes.InputBlur:
+          return { ...changes, selectedItem: state.selectedItem, inputValue: state.inputValue };
+        default:
+          return changes;
+      }
+    },
+  });
+
+  const navigatedSinceTyping = useRef(false);
+
+  /**
+   * Enter in the Find box: the scanner's (M6-16), or a person's choosing a suggestion (M6-17).
+   *
+   * <p>`isScannerTerminator` is what separates them. A person who types a code and presses Enter
+   * has not asked to create anything; they get the highlighted suggestion, or nothing.
+   */
+  const onFindKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      markCharacterKey(event.nativeEvent);
+      if (event.key.length === 1) navigatedSinceTyping.current = false;
+      if (NAVIGATION_KEYS.has(event.key)) navigatedSinceTyping.current = true;
+      if (event.key !== 'Enter') return;
+
+      // Whatever happens next, this Enter is spent. The field sits inside no form today, but a
+      // scan that submits something is exactly the bug this guard exists to prevent.
+      event.preventDefault();
+      // A scanner never presses an arrow key. Someone who typed fast, arrowed onto a suggestion and
+      // pressed Enter inside the 60ms window is a person choosing it — the window alone took them
+      // for a gun and offered to create a product whose barcode was "ceylon tea 4".
+      if (navigatedSinceTyping.current || !isScannerTerminator(event.nativeEvent)) return;
+
+      // The scan wins over any suggestion it typed its way past.
+      (
+        event.nativeEvent as KeyboardEvent & { preventDownshiftDefault?: boolean }
+      ).preventDownshiftDefault = true;
+      closeMenu();
+
+      const code = event.currentTarget.value.trim();
+      if (code !== '') handleScannedCode(code);
+    },
+    [closeMenu, handleScannedCode],
   );
 
   const submit = useCallback(
@@ -418,22 +525,61 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       )}
 
       <div className="flex flex-wrap items-end gap-4">
-        <Labelled
-          label="Find"
-          hint={mayManage ? 'name, code, or scan a packet' : 'name, code, or a barcode'}
-        >
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            onKeyDown={onFindKeyDown}
-            // Nothing helpful may interpose itself between the gun and the field.
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            className={`${FIELD_CLASS} w-72`}
-          />
-        </Labelled>
+        {/*
+          Not `Labelled`: that wraps the field in its <label>, and the suggestion list inside a
+          label would become part of the box's accessible name. Same look, label by id instead.
+        */}
+        <div className="flex flex-col gap-1">
+          <label {...getLabelProps()} className="text-ink-3 text-xs uppercase tracking-wider">
+            Find
+          </label>
+          <div className="relative">
+            <input
+              {...getInputProps({
+                onKeyDown: onFindKeyDown,
+                // Nothing helpful may interpose itself between the gun and the field.
+                autoComplete: 'off',
+                autoCorrect: 'off',
+                autoCapitalize: 'off',
+                spellCheck: false,
+                className: `${FIELD_CLASS} w-72`,
+              })}
+            />
+            <ul
+              {...getMenuProps({ 'aria-label': 'Suggestions' })}
+              className={`border-hair bg-surface absolute left-0 top-full z-10 mt-1 w-96 max-w-[calc(100vw-2rem)] rounded border py-1 shadow-lg ${
+                isOpen && suggestions.length > 0 ? '' : 'hidden'
+              }`}
+            >
+              {isOpen &&
+                suggestions.map((product, index) => (
+                  <li
+                    key={product.id}
+                    {...getItemProps({ item: product, index })}
+                    className={`min-h-touch flex cursor-pointer items-center gap-3 border-l-2 px-3 ${
+                      highlightedIndex === index ? 'border-accent bg-page' : 'border-transparent'
+                    }`}
+                  >
+                    <span className="text-ink flex-1 font-semibold">
+                      {product.name}
+                      {!product.active && (
+                        <span className="text-ink-3 ml-2 text-xs font-normal">discontinued</span>
+                      )}
+                    </span>
+                    <span className="lum-money text-ink-3 text-sm">{product.sku}</span>
+                    <span className="lum-money text-ink w-24 text-right text-sm">
+                      {formatMinor(product.priceMinor)}
+                    </span>
+                  </li>
+                ))}
+            </ul>
+          </div>
+          <span className="text-ink-3 text-xs">
+            {mayManage
+              ? 'name, code, or scan a packet — anywhere on this screen'
+              : 'name, code, or a barcode'}
+          </span>
+        </div>
         <label className="min-h-touch text-ink-2 flex items-center gap-2 text-sm">
           <input
             type="checkbox"
