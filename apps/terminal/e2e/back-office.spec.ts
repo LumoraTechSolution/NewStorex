@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
 import { expect } from '@playwright/test';
 
 import { psql, scalar } from './database';
@@ -983,6 +987,43 @@ test.describe('CSV import — M3-03', () => {
 
     await till.page.getByRole('button', { name: 'Cancel' }).click();
     await till.page.getByRole('button', { name: 'Back to the till' }).click();
+  });
+
+  /**
+   * The Excel template downloads from the import panel, byte for byte.
+   *
+   * <p>Asserted through a real click rather than a fetch, because the two ways this breaks are both
+   * outside the component: the packaged build forgetting `public/` (Next leaves it out of the
+   * standalone tree on purpose), and Electron's main process refusing or swallowing the download.
+   * A fetch would pass through both. The native Save dialog cannot be driven, so the main process
+   * is told where to save this one download — which is also proof the download reached it.
+   */
+  test('the Excel template downloads from the import panel', async ({ till }) => {
+    const folder = mkdtempSync(join(tmpdir(), 'storex-template-'));
+    const saved = join(folder, 'template.xlsx');
+    const shipped = resolve(__dirname, '../public/templates/storex-product-import-template.xlsx');
+
+    try {
+      await till.app.evaluate(({ session }, savePath) => {
+        session.defaultSession.once('will-download', (_event, item) => item.setSavePath(savePath));
+      }, saved);
+
+      await openBackOffice(till);
+      await signAs(till, 'OWNER', '1234');
+      await till.page.getByRole('button', { name: 'Products' }).click();
+      await till.page.getByRole('button', { name: 'Import', exact: true }).click();
+      await till.page.getByRole('link', { name: 'Download Excel template' }).click();
+
+      await expect
+        .poll(() => (existsSync(saved) ? statSync(saved).size : 0), { timeout: 10_000 })
+        .toBe(statSync(shipped).size);
+      expect(readFileSync(saved).equals(readFileSync(shipped))).toBe(true);
+
+      await till.page.getByRole('button', { name: 'Cancel' }).click();
+      await till.page.getByRole('button', { name: 'Back to the till' }).click();
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   });
 });
 
