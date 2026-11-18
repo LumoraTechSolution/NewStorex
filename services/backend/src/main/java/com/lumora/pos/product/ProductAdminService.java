@@ -48,10 +48,12 @@ public class ProductAdminService {
 
     private final JdbcTemplate jdbc;
     private final OutboxWriter outbox;
+    private final ProductSkuAllocator skus;
 
-    public ProductAdminService(JdbcTemplate jdbc, OutboxWriter outbox) {
+    public ProductAdminService(JdbcTemplate jdbc, OutboxWriter outbox, ProductSkuAllocator skus) {
         this.outbox = outbox;
         this.jdbc = jdbc;
+        this.skus = skus;
     }
 
     /**
@@ -109,14 +111,24 @@ public class ProductAdminService {
      */
     @Transactional
     public ProductRow create(long tenantId, ProductDraft draft) {
-        String sku = requireSku(draft.sku());
         String name = requireName(draft.name());
         requirePrice(draft.priceMinor());
         String taxMode = requireTaxMode(draft.taxMode());
         requireTaxRate(draft.taxRateBp());
         Integer reorderPoint = requireReorderPoint(draft.reorderPoint());
         List<String> barcodes = cleanBarcodes(draft.barcodes());
-        requireCategoryBelongsHere(tenantId, draft.categoryId());
+        String categoryName = requireCategoryBelongsHere(tenantId, draft.categoryId());
+
+        // Last, so nothing above can reject after a number has been taken out of the counter.
+        // A blank code is a request to make one up; anything typed is used exactly as typed.
+        String sku =
+                isBlank(draft.sku())
+                        ? skus.allocate(tenantId, categoryName)
+                        : requireSku(draft.sku());
+
+        // A generated code should never collide — but an owner may have hand-typed BEV-001 before
+        // the counter ever reached it, and that must come back as the sentence below rather than
+        // as a constraint violation nobody can read.
         refuseDuplicateSku(tenantId, sku, null);
 
         Long id =
@@ -403,19 +415,30 @@ public class ProductAdminService {
         }
     }
 
-    private void requireCategoryBelongsHere(long tenantId, Long categoryId) {
+    /**
+     * Refuses a category belonging to another tenant, and hands back its name.
+     *
+     * <p>The name is returned rather than re-queried because {@link #create} needs it to derive a
+     * code prefix, and it has just been read here. Null means the product is in no category, which
+     * V110 keeps legal on purpose.
+     */
+    private String requireCategoryBelongsHere(long tenantId, Long categoryId) {
         if (categoryId == null) {
-            return;
+            return null;
         }
-        Integer found =
-                jdbc.queryForObject(
-                        "SELECT count(*) FROM product_categories WHERE tenant_id = ? AND id = ?",
-                        Integer.class,
-                        tenantId,
-                        categoryId);
-        if (found == null || found == 0) {
+        try {
+            return jdbc.queryForObject(
+                    "SELECT name FROM product_categories WHERE tenant_id = ? AND id = ?",
+                    String.class,
+                    tenantId,
+                    categoryId);
+        } catch (EmptyResultDataAccessException notOurs) {
             throw new RejectedException("No such category");
         }
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     /**
@@ -424,6 +447,12 @@ public class ProductAdminService {
      * <p>Compared case-insensitively even though {@code ux_products_tenant_sku} is exact. {@code
      * TEA-400} and {@code tea-400} are one product to everybody who works there, and letting both
      * exist means a stocktake counts one of them while a report totals the other.
+     *
+     * <p>Blank reaches this only from {@link #save}, and is refused there. On a create it means
+     * something else entirely — make one up, see {@link ProductSkuAllocator} — but an edit may not
+     * regenerate. The code is the key a CSV re-import merges on ({@code ProductImportService}), so
+     * a shopkeeper who only meant to correct a price would find their next import creating
+     * duplicates of everything they had touched.
      */
     private static String requireSku(String sku) {
         if (sku == null || sku.trim().isEmpty()) {

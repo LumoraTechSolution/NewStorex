@@ -59,6 +59,17 @@ const TEMPLATE = [
   'MILK-400G,Milk Powder 400g,1390.00,18,Beverages,4791234567937|8901234567895',
 ].join('\n');
 
+/**
+ * The same format as a spreadsheet, for a shop that starts from Excel rather than from a text box.
+ *
+ * <p>Served from `public/` rather than generated here, because a correct .xlsx needs Text-formatted
+ * barcode cells and dropdowns that no CSV can carry — a 13-digit EAN typed into a General cell is
+ * saved as 4.79E+12 and the import then reads the wrong code. It is still only a front for the CSV
+ * import: the shop saves its Products sheet as CSV and picks that file above. Built by
+ * `scripts/product-import-template.py`.
+ */
+export const EXCEL_TEMPLATE_URL = '/templates/storex-product-import-template.xlsx';
+
 export function ProductImportPanel({
   office,
   onImported,
@@ -175,7 +186,18 @@ export function ProductImportPanel({
         >
           Show me the format
         </button>
+        <a
+          href={EXCEL_TEMPLATE_URL}
+          download="StoreX product template.xlsx"
+          className="border-hair text-ink-2 min-h-touch inline-flex items-center rounded border px-4"
+        >
+          Download Excel template
+        </a>
       </div>
+      <p className="text-ink-3 -mt-2 text-sm">
+        Filling in the Excel template? Save its Products sheet as <strong>CSV UTF-8</strong>, then
+        choose that file above.
+      </p>
 
       {/*
         A paste box as well as a file picker, because both are real. A supplier's list arrives as a

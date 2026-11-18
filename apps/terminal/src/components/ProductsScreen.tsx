@@ -1,11 +1,14 @@
 'use client';
 
-import { formatMinor, parseAmountToMinor } from '@lumora/domain';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { formatMinor, parseAmountToMinor, suggestedSkuExample } from '@lumora/domain';
+import { useCombobox } from 'downshift';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { FIELD_CLASS, Labelled, NUMERIC_FIELD_CLASS } from '@/components/Labelled';
 import { ProductImportPanel } from '@/components/ProductImportPanel';
+import { rankProducts } from '@/lib/productSearch';
 import type { BackOffice } from '@/lib/useBackOffice';
+import { isScannerTerminator, markCharacterKey, useScanAnywhere } from '@/lib/scanner';
 import { useEntitlement } from '@/lib/useEntitlement';
 
 /**
@@ -83,6 +86,9 @@ const BLANK: Draft = {
   barcodes: [''],
 };
 
+/** Keys that move through the suggestions. A person presses these; a scanner never does. */
+const NAVIGATION_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+
 function toDraft(product: ProductRow): Draft {
   return {
     sku: product.sku,
@@ -105,6 +111,8 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
   const [showRetired, setShowRetired] = useState(false);
   const [editing, setEditing] = useState<ProductRow | null>(null);
   const [adding, setAdding] = useState(false);
+  /** Carried from a scan in the Find box into the blank form it opens. */
+  const [scannedBarcode, setScannedBarcode] = useState<string | null>(null);
   const [managingCategories, setManagingCategories] = useState(false);
   const [importing, setImporting] = useState(false);
   const { allows } = useEntitlement();
@@ -165,6 +173,162 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       );
   }, [products, filter, showRetired]);
 
+  /**
+   * A packet scanned on this screen — into the Find box (M6-16) or anywhere else (M6-18).
+   *
+   * <p>One motion covers both halves of what an owner is actually doing when they work through a
+   * delivery: most of what they scan is already in the catalogue and they want to check or correct
+   * it, and the rest is new. Making them decide which before they scan means knowing the answer in
+   * advance, which is the thing they picked up the gun to find out.
+   *
+   * <p>The scan is matched against barcodes only, never against name or code. The filter box below
+   * is deliberately looser — a barcode that is a substring of a longer one is a fine thing to
+   * *search* by and a terrible thing to open an editor on. A scan is an exact claim about which
+   * product is in the owner's hand.
+   */
+  const handleScannedCode = useCallback(
+    (code: string) => {
+      const match = (products ?? []).find((product) => product.barcodes.includes(code));
+      if (match) {
+        setFilter('');
+        setAdding(false);
+        setEditing(match);
+        setNotice(`${match.name} — scanned.`);
+        return;
+      }
+
+      if (!mayManage) {
+        setError(`No product carries ${code}, and you cannot add one.`);
+        return;
+      }
+
+      // New. The form opens with the code already in it and everything else blank, so the only
+      // thing left is the decision a scanner cannot make: what this is and what it costs.
+      setFilter('');
+      setEditing(null);
+      setScannedBarcode(code);
+      setAdding(true);
+      setNotice(`${code} is not in the catalogue yet. Name it and price it.`);
+    },
+    [products, mayManage],
+  );
+
+  /**
+   * A scan with no text field focused (M6-18) — the owner last clicked a button, or nothing.
+   *
+   * <p>Refused while a product form is open. The owner may be halfway through typing a price, and
+   * a scan that swapped the form for another product would throw that away without a word. A scan
+   * into one of the form's own barcode fields still works; that field has focus, so this never
+   * sees it.
+   */
+  useScanAnywhere((code) => {
+    if (adding || editing) {
+      setNotice(null);
+      setError(`Finish or cancel this product first, then scan ${code} again.`);
+      return;
+    }
+    setError(null);
+    handleScannedCode(code);
+  });
+
+  /**
+   * Suggestions under the Find box (M6-17). The list below still filters on the same text; this is
+   * the short version, ranked, for an owner who knows which one they want and only needs to reach
+   * it. Picking one opens it — or, for someone who may only look, narrows the list to it.
+   */
+  const suggestions = useMemo(
+    () =>
+      rankProducts(
+        (products ?? []).filter((product) => showRetired || product.active),
+        filter,
+      ),
+    [products, filter, showRetired],
+  );
+
+  const openProduct = useCallback(
+    (product: ProductRow) => {
+      if (!mayManage) {
+        // The code is unique, so this leaves exactly the one row.
+        setFilter(product.sku);
+        return;
+      }
+      setFilter('');
+      setAdding(false);
+      setEditing(product);
+    },
+    [mayManage],
+  );
+
+  const {
+    isOpen,
+    highlightedIndex,
+    getLabelProps,
+    getInputProps,
+    getMenuProps,
+    getItemProps,
+    closeMenu,
+  } = useCombobox<ProductRow>({
+    items: suggestions,
+    inputValue: filter,
+    // Always nothing selected, so picking the same product twice still counts as a pick.
+    selectedItem: null,
+    itemToString: (product) => product?.name ?? '',
+    onInputValueChange: ({ inputValue }) => setFilter(inputValue ?? ''),
+    onSelectedItemChange: ({ selectedItem }) => {
+      if (selectedItem) openProduct(selectedItem);
+    },
+    stateReducer: (state, { type, changes }) => {
+      switch (type) {
+        // A pick opens the product; it does not write the product's name into the box, which
+        // would leave the list filtered down to it behind the open form.
+        case useCombobox.stateChangeTypes.InputKeyDownEnter:
+        case useCombobox.stateChangeTypes.ItemClick:
+          return { ...changes, inputValue: state.inputValue, isOpen: false };
+        // Downshift picks whatever is highlighted when the box loses focus. Clicking away is not
+        // a decision to open a product.
+        case useCombobox.stateChangeTypes.InputBlur:
+          return { ...changes, selectedItem: state.selectedItem, inputValue: state.inputValue };
+        default:
+          return changes;
+      }
+    },
+  });
+
+  const navigatedSinceTyping = useRef(false);
+
+  /**
+   * Enter in the Find box: the scanner's (M6-16), or a person's choosing a suggestion (M6-17).
+   *
+   * <p>`isScannerTerminator` is what separates them. A person who types a code and presses Enter
+   * has not asked to create anything; they get the highlighted suggestion, or nothing.
+   */
+  const onFindKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      markCharacterKey(event.nativeEvent);
+      if (event.key.length === 1) navigatedSinceTyping.current = false;
+      if (NAVIGATION_KEYS.has(event.key)) navigatedSinceTyping.current = true;
+      if (event.key !== 'Enter') return;
+
+      // Whatever happens next, this Enter is spent. The field sits inside no form today, but a
+      // scan that submits something is exactly the bug this guard exists to prevent.
+      event.preventDefault();
+      // A scanner never presses an arrow key. Someone who typed fast, arrowed onto a suggestion and
+      // pressed Enter inside the 60ms window is a person choosing it — the window alone took them
+      // for a gun and offered to create a product whose barcode was "ceylon tea 4".
+      if (navigatedSinceTyping.current || !isScannerTerminator(event.nativeEvent)) return;
+
+      // The scan wins over any suggestion it typed its way past.
+      (
+        event.nativeEvent as KeyboardEvent & { preventDownshiftDefault?: boolean }
+      ).preventDownshiftDefault = true;
+      closeMenu();
+
+      const code = event.currentTarget.value.trim();
+      if (code !== '') handleScannedCode(code);
+    },
+    [closeMenu, handleScannedCode],
+  );
+
   const submit = useCallback(
     async (draft: Draft, product: ProductRow | null) => {
       const priceMinor = parseAmountToMinor(draft.price);
@@ -194,7 +358,7 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
 
       const body = JSON.stringify({
         clientUuid: product ? product.clientUuid : crypto.randomUUID(),
-        sku: draft.sku,
+        sku: draft.sku.trim(),
         name: draft.name,
         priceMinor,
         taxMode: draft.taxMode,
@@ -215,6 +379,7 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       if (ok) {
         setAdding(false);
         setEditing(null);
+        setScannedBarcode(null);
       }
     },
     [act, office],
@@ -257,6 +422,9 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
               onClick={() => {
                 setAdding(true);
                 setEditing(null);
+                // A blank form means blank. Without this it would open carrying whatever the
+                // last scan put there, which is a barcode on the wrong product.
+                setScannedBarcode(null);
               }}
               className="border-accent text-accent min-h-touch rounded border px-4"
             >
@@ -325,11 +493,17 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
 
       {adding && mayManage && (
         <ProductForm
-          title="Add a product"
-          initial={BLANK}
+          // Keyed by the scanned code so a second scan, while this form is still open, replaces
+          // the barcode instead of leaving the first one sitting in a mounted field.
+          key={scannedBarcode ?? 'blank'}
+          title={scannedBarcode ? `Add the product carrying ${scannedBarcode}` : 'Add a product'}
+          initial={scannedBarcode ? { ...BLANK, barcodes: [scannedBarcode] } : BLANK}
           categories={categories}
           submitLabel="Create"
-          onCancel={() => setAdding(false)}
+          onCancel={() => {
+            setAdding(false);
+            setScannedBarcode(null);
+          }}
           onSubmit={(draft) => submit(draft, null)}
         />
       )}
@@ -351,13 +525,61 @@ export function ProductsScreen({ office }: { office: BackOffice }) {
       )}
 
       <div className="flex flex-wrap items-end gap-4">
-        <Labelled label="Find" hint="name, code, or a barcode">
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            className={`${FIELD_CLASS} w-72`}
-          />
-        </Labelled>
+        {/*
+          Not `Labelled`: that wraps the field in its <label>, and the suggestion list inside a
+          label would become part of the box's accessible name. Same look, label by id instead.
+        */}
+        <div className="flex flex-col gap-1">
+          <label {...getLabelProps()} className="text-ink-3 text-xs uppercase tracking-wider">
+            Find
+          </label>
+          <div className="relative">
+            <input
+              {...getInputProps({
+                onKeyDown: onFindKeyDown,
+                // Nothing helpful may interpose itself between the gun and the field.
+                autoComplete: 'off',
+                autoCorrect: 'off',
+                autoCapitalize: 'off',
+                spellCheck: false,
+                className: `${FIELD_CLASS} w-72`,
+              })}
+            />
+            <ul
+              {...getMenuProps({ 'aria-label': 'Suggestions' })}
+              className={`border-hair bg-surface absolute left-0 top-full z-10 mt-1 w-96 max-w-[calc(100vw-2rem)] rounded border py-1 shadow-lg ${
+                isOpen && suggestions.length > 0 ? '' : 'hidden'
+              }`}
+            >
+              {isOpen &&
+                suggestions.map((product, index) => (
+                  <li
+                    key={product.id}
+                    {...getItemProps({ item: product, index })}
+                    className={`min-h-touch flex cursor-pointer items-center gap-3 border-l-2 px-3 ${
+                      highlightedIndex === index ? 'border-accent bg-page' : 'border-transparent'
+                    }`}
+                  >
+                    <span className="text-ink flex-1 font-semibold">
+                      {product.name}
+                      {!product.active && (
+                        <span className="text-ink-3 ml-2 text-xs font-normal">discontinued</span>
+                      )}
+                    </span>
+                    <span className="lum-money text-ink-3 text-sm">{product.sku}</span>
+                    <span className="lum-money text-ink w-24 text-right text-sm">
+                      {formatMinor(product.priceMinor)}
+                    </span>
+                  </li>
+                ))}
+            </ul>
+          </div>
+          <span className="text-ink-3 text-xs">
+            {mayManage
+              ? 'name, code, or scan a packet — anywhere on this screen'
+              : 'name, code, or a barcode'}
+          </span>
+        </div>
         <label className="min-h-touch text-ink-2 flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -459,6 +681,17 @@ function ProductForm({
 }) {
   const [draft, setDraft] = useState<Draft>(initial);
 
+  /**
+   * What the code box offers when it is empty.
+   *
+   * A placeholder and not a pre-filled value, because only the backend can know the number — and
+   * only at the moment it inserts, since another till may take the next one first. Showing the
+   * shape keeps "leave it blank" honest: the box really is empty, so there is nothing to
+   * accidentally overwrite when the category changes, and nothing to clear before sending.
+   */
+  const categoryName =
+    categories.find((category) => category.id === draft.categoryId)?.name ?? null;
+
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
 
@@ -467,6 +700,35 @@ function ProductForm({
       ...current,
       barcodes: current.barcodes.map((barcode, i) => (i === index ? value : barcode)),
     }));
+
+  /**
+   * A gun finishing a code inside a barcode field.
+   *
+   * <p>This exists because of what Enter means in a form. A scanner ends every code with one, so
+   * without this an owner scanning a second barcode onto a product would submit the product —
+   * saving whatever half-typed price was in the box. That is the same failure the till's scan
+   * field guards against, for the same reason, using the same clock.
+   *
+   * <p>A scan into the last row appends a blank one after it, so scanning three codes onto a
+   * product is three trigger pulls and no clicks.
+   */
+  const onBarcodeKeyDown = (index: number, event: React.KeyboardEvent<HTMLInputElement>) => {
+    markCharacterKey(event.nativeEvent);
+    if (event.key !== 'Enter') return;
+
+    // Spent either way: Enter in a barcode field should never be the submit button, whether a
+    // gun or a person pressed it. The form has a Create button and it is the only way in.
+    event.preventDefault();
+    if (!isScannerTerminator(event.nativeEvent)) return;
+
+    setDraft((current) => {
+      const barcodes = [...current.barcodes];
+      if (index === barcodes.length - 1 && barcodes[index]?.trim() !== '') {
+        barcodes.push('');
+      }
+      return { ...current, barcodes };
+    });
+  };
 
   return (
     <form
@@ -479,12 +741,12 @@ function ProductForm({
       <h3 className="text-ink font-semibold">{title}</h3>
 
       <div className="flex flex-wrap gap-3">
-        <Labelled label="Product code" hint="the shop's own code — a SKU">
+        <Labelled label="Product code" hint="leave it blank and we'll make one">
           <input
             value={draft.sku}
             onChange={(event) => set('sku', event.target.value)}
             maxLength={64}
-            required
+            placeholder={suggestedSkuExample(categoryName)}
             className={NUMERIC_FIELD_CLASS}
           />
         </Labelled>
@@ -585,7 +847,8 @@ function ProductForm({
         <legend className="text-ink-3 text-xs uppercase tracking-wider">Barcodes</legend>
         <p className="text-ink-3 text-xs">
           The first one is the primary. A product may carry several — the manufacturer&apos;s code
-          and a supplier&apos;s own are the same goods, and both have to scan.
+          and a supplier&apos;s own are the same goods, and both have to scan. Scan straight into a
+          box: the next one opens by itself.
         </p>
         {draft.barcodes.map((barcode, index) => (
           // Keyed by position, which is right here: the row's identity *is* its position in the
@@ -596,7 +859,12 @@ function ProductForm({
             <input
               value={barcode}
               onChange={(event) => setBarcode(index, event.target.value)}
+              onKeyDown={(event) => onBarcodeKeyDown(index, event)}
               aria-label={index === 0 ? 'Primary barcode' : `Barcode ${index + 1}`}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               className={`${NUMERIC_FIELD_CLASS} w-64`}
             />
             <button

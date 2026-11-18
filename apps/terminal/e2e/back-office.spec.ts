@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
 import { expect } from '@playwright/test';
 
 import { psql, scalar } from './database';
@@ -649,6 +653,240 @@ test.describe('products — M3-02', () => {
   });
 
   /**
+   * Scanning a packet into the back office's Find box (M3-02).
+   *
+   * <h2>Why this is an e2e test and not a unit test</h2>
+   *
+   * The whole feature is a timing distinction. `isScannerTerminator` decides between a gun and a
+   * person by how fast Enter follows the last character, and that is a property of real keystrokes
+   * arriving through a real event loop. A jsdom test would assert on a `timeStamp` it made up
+   * itself, which proves the comparison operator works and nothing about whether a scanner is
+   * recognised.
+   *
+   * <h2>Both halves, because the second depends on the first being wrong</h2>
+   *
+   * A scan either opens a product or offers to create one, and there is exactly one condition
+   * separating them. Testing only the create path would pass just as well if every scan created a
+   * product — including the ones that duplicate something already in the catalogue under a code
+   * the owner has just scanned.
+   */
+  test('scanning a packet in the back office opens the product, or starts a new one', async ({
+    till,
+  }) => {
+    // Keyed on the barcode, not the code. Since the code may be generated, this test no longer
+    // knows it in advance — and a cleanup that guesses leaves rows behind in lumora_local.
+    psql(
+      "DELETE FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+    );
+    psql("DELETE FROM product_barcodes WHERE barcode = '9990000000024'");
+
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    await expect(till.page.getByRole('heading', { name: 'Products' })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    const find = till.page.getByLabel('Find');
+
+    // ---- Half one: a code already in the catalogue opens that product for editing.
+    //
+    // 4791234567890 is seeded (global-setup) and is what the other specs sell.
+    await find.click();
+    await till.page.keyboard.type('4791234567890', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+
+    await expect(till.page.getByRole('status')).toContainText('scanned.', { timeout: 10_000 });
+    // The editor is open on it, not a create form: "Save", not "Create".
+    await expect(till.page.getByRole('button', { name: 'Save' })).toBeVisible();
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- Half two: an unknown code opens a blank form carrying it.
+    await find.click();
+    await till.page.keyboard.type('9990000000024', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+
+    await expect(till.page.getByRole('status')).toContainText('is not in the catalogue yet.', {
+      timeout: 10_000,
+    });
+    // The barcode is already in the form. This is the whole point of the feature: the one thing
+    // the owner cannot be asked to retype is the number they are holding a scanner against.
+    await expect(till.page.getByLabel('Primary barcode')).toHaveValue('9990000000024');
+
+    // The code box is left alone on purpose. A scan already answered the only question a scanner
+    // can answer, and making the owner invent a code before they can save is the friction this
+    // feature exists to remove — so the backend makes one up.
+    await expect(till.page.getByLabel('Product code')).toHaveValue('');
+    await till.page.getByLabel('Name').fill('Scanned Coconut Oil 400ml');
+    await till.page.getByLabel('Price', { exact: true }).fill('7.50');
+    await till.page.getByRole('button', { name: 'Create' }).click();
+
+    await expect(till.page.getByRole('status')).toContainText('is now in the catalogue.', {
+      timeout: 10_000,
+    });
+
+    const generated = scalar(
+      "SELECT sku FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+    );
+    // Uncategorised, so it counts on the neutral prefix rather than an aisle's.
+    expect(generated).toMatch(/^P-\d{4}$/);
+    expect(
+      scalar(
+        "SELECT price_minor FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+      ),
+    ).toBe('750');
+
+    // And it sells. A product created from a scan is a product like any other, or the feature
+    // has only moved the dead end further along.
+    await till.page.getByRole('button', { name: 'Back to the till' }).click();
+    await expect(till.page.locator('#scan')).toBeVisible({ timeout: 10_000 });
+    await scan(till, '9990000000024');
+    await expect(till.page.getByText('Scanned Coconut Oil 400ml')).toBeVisible({ timeout: 10_000 });
+
+    await till.page.keyboard.press('Escape');
+
+    psql(
+      "DELETE FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000024')",
+    );
+    psql("DELETE FROM product_barcodes WHERE barcode = '9990000000024'");
+  });
+
+  /**
+   * Suggestions under the Find box (M6-17).
+   *
+   * <p>Three ways in, and one way that must not be a way in: arrow + Enter and a click both open
+   * the product, while arrowing onto a suggestion and then clicking elsewhere must not. That last
+   * one is downshift's default — it picks the highlighted item on blur — and it is overridden in
+   * ProductsScreen, so this is what notices if the override is ever lost.
+   */
+  test('typing in Find suggests products, and picking one opens it', async ({ till }) => {
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    const heading = till.page.getByRole('heading', { name: 'Products' });
+    await expect(heading).toBeVisible({ timeout: 10_000 });
+
+    const find = till.page.getByLabel('Find');
+    const tea = till.page.getByRole('option', { name: /Ceylon Tea 400g/ });
+
+    // ---- Arrow and Enter.
+    await find.click();
+    await till.page.keyboard.type('ceylon tea 4');
+    await expect(tea).toBeVisible();
+    await till.page.keyboard.press('ArrowDown');
+    await till.page.keyboard.press('Enter');
+    await expect(till.page.getByRole('button', { name: 'Save' })).toBeVisible();
+    await expect(till.page.getByLabel('Name')).toHaveValue('Ceylon Tea 400g');
+    // The pick opened the product; it did not leave the list filtered down behind the form.
+    await expect(find).toHaveValue('');
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- A click.
+    await find.click();
+    await till.page.keyboard.type('ceylon');
+    await tea.click();
+    await expect(till.page.getByRole('button', { name: 'Save' })).toBeVisible();
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- Highlighted, then clicked away from: nothing opens.
+    await find.click();
+    await till.page.keyboard.type('ceylon');
+    await expect(tea).toBeVisible();
+    await till.page.keyboard.press('ArrowDown');
+    await heading.click();
+    await expect(tea).toBeHidden();
+    await expect(till.page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+  });
+
+  /**
+   * A scan with nothing focused (M6-18).
+   *
+   * <p>Clicking the heading leaves focus on the page itself, which is where it is after the owner
+   * clicks any button that then goes away — Cancel, most often. That is the state in which a scan
+   * used to vanish.
+   */
+  test('a scan with no field focused still opens the product, or starts a new one', async ({
+    till,
+  }) => {
+    psql(
+      "DELETE FROM products WHERE id IN (SELECT product_id FROM product_barcodes WHERE barcode = '9990000000031')",
+    );
+    psql("DELETE FROM product_barcodes WHERE barcode = '9990000000031'");
+
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    const heading = till.page.getByRole('heading', { name: 'Products' });
+    await expect(heading).toBeVisible({ timeout: 10_000 });
+
+    // ---- Known: opens it.
+    await heading.click();
+    await till.page.keyboard.type('4791234567890', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+    await expect(till.page.getByRole('status')).toContainText('scanned.', { timeout: 10_000 });
+    await expect(till.page.getByLabel('Name')).toHaveValue('Ceylon Tea 400g');
+
+    // ---- With a form open: refused, and the form is left as it was.
+    await till.page.getByLabel('Name').fill('Ceylon Tea 400g — half-typed');
+    await heading.click();
+    await till.page.keyboard.type('9990000000031', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+    await expect(alert(till)).toContainText('Finish or cancel this product first');
+    await expect(till.page.getByLabel('Name')).toHaveValue('Ceylon Tea 400g — half-typed');
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // ---- Unknown, after Cancel took focus with it: a blank form carrying the code.
+    await till.page.keyboard.type('9990000000031', { delay: 0 });
+    await till.page.keyboard.press('Enter');
+    await expect(till.page.getByRole('status')).toContainText('is not in the catalogue yet.', {
+      timeout: 10_000,
+    });
+    await expect(till.page.getByLabel('Primary barcode')).toHaveValue('9990000000031');
+    await till.page.getByRole('button', { name: 'Cancel' }).click();
+
+    // Nothing was saved along the way.
+    expect(scalar("SELECT count(*) FROM product_barcodes WHERE barcode = '9990000000031'")).toBe(
+      '0',
+    );
+    expect(
+      scalar(
+        "SELECT p.name FROM products p JOIN product_barcodes b ON b.product_id = p.id WHERE b.barcode = '4791234567890'",
+      ),
+    ).toBe('Ceylon Tea 400g');
+  });
+
+  /**
+   * A code the owner types is theirs.
+   *
+   * <p>The generated code exists so nobody has to invent one, not so nobody may. Plenty of shops
+   * already carry supplier codes or shelf labels, and a form that quietly replaced them would be
+   * worse than the one that demanded them.
+   */
+  test('a product code typed by hand is saved exactly as typed', async ({ till }) => {
+    psql("DELETE FROM products WHERE sku = 'E2E-TYPED'");
+
+    await openBackOffice(till);
+    await signAs(till, 'OWNER', '1234');
+    await till.page.getByRole('button', { name: 'Products' }).click();
+    await expect(till.page.getByRole('heading', { name: 'Products' })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    await till.page.getByRole('button', { name: 'Add a product' }).click();
+    await till.page.getByLabel('Product code').fill('E2E-TYPED');
+    await till.page.getByLabel('Name').fill('Hand Coded Vinegar 500ml');
+    await till.page.getByLabel('Price', { exact: true }).fill('4.25');
+    await till.page.getByRole('button', { name: 'Create' }).click();
+
+    await expect(till.page.getByRole('status')).toContainText('is now in the catalogue.', {
+      timeout: 10_000,
+    });
+    expect(scalar("SELECT price_minor FROM products WHERE sku = 'E2E-TYPED'")).toBe('425');
+
+    psql("DELETE FROM products WHERE sku = 'E2E-TYPED'");
+  });
+
+  /**
    * A barcode belongs to one product, and the refusal says which.
    *
    * <p>The unique index would refuse this on its own. What is being asserted is that the message
@@ -853,6 +1091,43 @@ test.describe('CSV import — M3-03', () => {
 
     await till.page.getByRole('button', { name: 'Cancel' }).click();
     await till.page.getByRole('button', { name: 'Back to the till' }).click();
+  });
+
+  /**
+   * The Excel template downloads from the import panel, byte for byte.
+   *
+   * <p>Asserted through a real click rather than a fetch, because the two ways this breaks are both
+   * outside the component: the packaged build forgetting `public/` (Next leaves it out of the
+   * standalone tree on purpose), and Electron's main process refusing or swallowing the download.
+   * A fetch would pass through both. The native Save dialog cannot be driven, so the main process
+   * is told where to save this one download — which is also proof the download reached it.
+   */
+  test('the Excel template downloads from the import panel', async ({ till }) => {
+    const folder = mkdtempSync(join(tmpdir(), 'storex-template-'));
+    const saved = join(folder, 'template.xlsx');
+    const shipped = resolve(__dirname, '../public/templates/storex-product-import-template.xlsx');
+
+    try {
+      await till.app.evaluate(({ session }, savePath) => {
+        session.defaultSession.once('will-download', (_event, item) => item.setSavePath(savePath));
+      }, saved);
+
+      await openBackOffice(till);
+      await signAs(till, 'OWNER', '1234');
+      await till.page.getByRole('button', { name: 'Products' }).click();
+      await till.page.getByRole('button', { name: 'Import', exact: true }).click();
+      await till.page.getByRole('link', { name: 'Download Excel template' }).click();
+
+      await expect
+        .poll(() => (existsSync(saved) ? statSync(saved).size : 0), { timeout: 10_000 })
+        .toBe(statSync(shipped).size);
+      expect(readFileSync(saved).equals(readFileSync(shipped))).toBe(true);
+
+      await till.page.getByRole('button', { name: 'Cancel' }).click();
+      await till.page.getByRole('button', { name: 'Back to the till' }).click();
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   });
 });
 
